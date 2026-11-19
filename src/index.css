@@ -21,6 +21,8 @@
   --color-accent: #9c76ff;
   --color-blue: #55b9ff;
   --font-mono: 'DM Mono', Consolas, monospace;
+  --content-max-width: 1680px;
+  --content-gutter: clamp(18px, 2vw, 32px);
 
   color-scheme: dark;
   scroll-behavior: smooth;

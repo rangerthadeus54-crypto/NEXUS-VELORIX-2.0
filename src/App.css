@@ -46,7 +46,7 @@
 
 .header-inner {
   display: flex;
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   height: 76px;
   align-items: center;
   justify-content: space-between;
@@ -229,7 +229,7 @@
 }
 
 .hero-content {
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   margin: 0 auto;
   padding: 48px 0 62px;
   animation: rise-in 800ms ease both;
@@ -411,7 +411,7 @@
 
 .hero-side-note {
   position: absolute;
-  right: max(24px, calc((100% - 1240px) / 2));
+  right: max(var(--content-gutter), calc((100% - var(--content-max-width)) / 2));
   bottom: 102px;
   display: flex;
   align-items: center;
@@ -429,7 +429,7 @@
 
 .scroll-cue {
   position: absolute;
-  right: max(24px, calc((100% - 1240px) / 2));
+  right: max(var(--content-gutter), calc((100% - var(--content-max-width)) / 2));
   bottom: 27px;
   display: flex;
   align-items: center;
@@ -444,7 +444,7 @@
 
 .stats-strip {
   display: flex;
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   min-height: 99px;
   align-items: center;
   justify-content: space-between;
@@ -496,7 +496,7 @@
 }
 
 .content-section {
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   margin: auto;
   padding: 104px 0;
 }
@@ -693,7 +693,7 @@
 
 .community-grid {
   display: grid;
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   grid-template-columns: 0.86fr 1.14fr;
   align-items: center;
   gap: clamp(48px, 10vw, 150px);
@@ -968,7 +968,7 @@
 
 .leaderboard-inner {
   display: grid;
-  width: min(1240px, calc(100% - 64px));
+  width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   grid-template-columns: 0.72fr 1.28fr;
   align-items: center;
   gap: 52px;
@@ -1290,7 +1290,7 @@
 }
 
 .site-footer {
-  padding: 43px max(32px, calc((100% - 1240px) / 2)) 0;
+  padding: 43px max(var(--content-gutter), calc((100% - var(--content-max-width)) / 2)) 0;
   border-top: 1px solid var(--color-line);
   background: #0a0b10;
 }
@@ -1382,7 +1382,7 @@
 
 @media (max-width: 980px) {
   .header-inner {
-    width: calc(100% - 40px);
+    width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   }
 
   .primary-navigation {
@@ -1405,7 +1405,7 @@
   .content-section,
   .community-grid,
   .leaderboard-inner {
-    width: calc(100% - 48px);
+    width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   }
 
   .games-grid {
@@ -1462,7 +1462,7 @@
   }
 
   .header-inner {
-    width: calc(100% - 36px);
+    width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
     height: 66px;
   }
 
@@ -1525,7 +1525,7 @@
   .content-section,
   .community-grid,
   .leaderboard-inner {
-    width: calc(100% - 38px);
+    width: min(var(--content-max-width), calc(100% - var(--content-gutter) - var(--content-gutter)));
   }
 
   .hero-content {
@@ -1829,7 +1829,7 @@
   }
 
   .site-footer {
-    padding: 34px 19px 0;
+    padding: 34px var(--content-gutter) 0;
   }
 
   .footer-main {
