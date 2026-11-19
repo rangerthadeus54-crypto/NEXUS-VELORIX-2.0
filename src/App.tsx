@@ -12,7 +12,6 @@ import {
   Globe2,
   Menu,
   Shield,
-  Sparkles,
   Swords,
   Trophy,
   Users,
@@ -174,13 +173,6 @@ function App() {
 
   return (
     <div className="site-shell">
-      <div className="preview-notice">
-        <Sparkles size={13} aria-hidden="true" />
-        <span>PLATFORM PREVIEW</span>
-        <span className="notice-divider" aria-hidden="true" />
-        <span>Community, tournament, ranking and news content is illustrative sample data.</span>
-      </div>
-
       <header className="site-header">
         <div className="header-inner">
           <Brand />

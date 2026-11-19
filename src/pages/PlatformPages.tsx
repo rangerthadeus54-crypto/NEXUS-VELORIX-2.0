@@ -6,15 +6,12 @@ import {
   CalendarDays,
   Clock3,
   ChevronRight,
-  Crosshair,
   Flame,
   Gamepad2,
   Globe2,
   LockKeyhole,
-  Medal,
   Search,
   Shield,
-  Swords,
   Trophy,
   Users,
   UserRound,
@@ -51,13 +48,6 @@ import './PlatformPages.css'
 const gameOptions = ['All games', ...featuredGameNames]
 const gameNames = featuredGameNames
 
-const communityData = [
-  { name: 'Night Raiders', game: 'Valorant', region: 'Europe West', players: '2.4k', focus: 'Ranked · Competitive', description: 'A focused squad for coordinated ranked sessions, friendly VOD reviews, and weekly community nights.', icon: Crosshair, color: 'violet' },
-  { name: 'Drop Zone', game: 'Apex Legends', region: 'Global', players: '1.8k', focus: 'Trios · Casual & ranked', description: 'Find a third, share rotations, and play together at every skill level.', icon: Flame, color: 'orange' },
-  { name: 'The Last Round', game: 'Counter-Strike 2', region: 'North America', players: '980', focus: 'Premier · Team play', description: 'A team-first space for Premier queues, practice sessions, and match-day coordination.', icon: Shield, color: 'blue' },
-  { name: 'Summoner Circle', game: 'League of Legends', region: 'Europe West', players: '760', focus: 'Flex · All skill levels', description: 'A welcoming group for Flex games, finding a duo, and learning together.', icon: Swords, color: 'gold' },
-]
-
 const playerData = [
   { name: 'vexx', tag: '#NXR', game: 'Valorant', country: 'Sweden', region: 'Europe', rank: 'Radiant', avatar: 'V', color: 'purple', looking: 'Ranked · evenings' },
   { name: 'Kairo', tag: '#404', game: 'Apex Legends', country: 'Canada', region: 'North America', rank: 'Master', avatar: 'K', color: 'blue', looking: 'Chill games · weekends' },
@@ -65,29 +55,10 @@ const playerData = [
   { name: 'Mori', tag: '#LUNA', game: 'League of Legends', country: 'Japan', region: 'Asia Pacific', rank: 'Diamond', avatar: 'M', color: 'teal', looking: 'Flex queue · evenings' },
 ]
 
-const tournamentData = [
-  { game: 'Valorant', name: 'Nexus Open: Series 04', date: 'NOV 24, 2026', prize: '$5,000', status: 'UPCOMING' },
-  { game: 'Apex Legends', name: 'Dropzone Showdown', date: 'NOV 27, 2026', prize: '$2,500', status: 'UPCOMING' },
-  { game: 'Counter-Strike 2', name: 'Midnight Masters', date: 'DEC 02, 2026', prize: '$7,500', status: 'UPCOMING' },
-]
-
-const leaderboardData = [
-  { name: 'vexx', tag: '#NXR', game: 'Valorant', country: 'Sweden', score: '3,842', change: '+128', badge: 'Season contender', avatar: 'V', color: 'purple' },
-  { name: 'Kairo', tag: '#404', game: 'Apex Legends', country: 'Canada', score: '3,710', change: '+96', badge: 'Regional finalist', avatar: 'K', color: 'blue' },
-  { name: 's0laris', tag: '#ECL', game: 'Counter-Strike 2', country: 'Germany', score: '3,695', change: '+74', badge: 'Clutch streak', avatar: 'S', color: 'orange' },
-  { name: 'Mori', tag: '#LUNA', game: 'League of Legends', country: 'Japan', score: '3,558', change: '+61', badge: 'All-rounder', avatar: 'M', color: 'teal' },
-]
-
 const teamData = [
   { name: 'ECLIPSE', game: 'Valorant', region: 'Europe', members: '5 / 7', focus: 'Tournament roster', description: 'A developing competitive roster looking for two flexible players for regular scrims.', color: 'purple' },
   { name: 'NORTHSTAR', game: 'Apex Legends', region: 'North America', members: '9 / 12', focus: 'Competitive & community', description: 'A mixed competitive and community squad with room for new teammates.', color: 'blue' },
   { name: 'AFTER HOURS', game: 'Counter-Strike 2', region: 'Global', members: '14 / 20', focus: 'Premier · relaxed pace', description: 'A laid-back group for Premier games and late-night queues across regions.', color: 'orange' },
-]
-
-const newsData = [
-  { category: 'COMMUNITY', title: 'The next era of competitive gaming is built together', date: 'NOV 18, 2026', image: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1100&q=85' },
-  { category: 'TOURNAMENTS', title: 'Nexus Open Series 04: registrations are on the horizon', date: 'NOV 15, 2026', image: 'https://images.unsplash.com/photo-1547394765-185e1e68f34e?auto=format&fit=crop&w=900&q=85' },
-  { category: 'GAMES', title: 'Find your next squad, one great match at a time', date: 'NOV 12, 2026', image: 'https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=900&q=85' },
 ]
 
 function PageIntro({ eyebrow, title, description, children }: {
@@ -130,7 +101,7 @@ function ApiDataNotice<T>({
   }
 
   if (resource.loading) {
-    return <p className="api-data-notice" role="status">Loading {sourceName}; {fallbackText} remains available.</p>
+    return <p className="api-data-notice" role="status">Loading {sourceName}. {fallbackText}</p>
   }
 
   return (
@@ -197,7 +168,6 @@ function FilterSelect({ value, onChange, options, label, disabled = false }: {
 function CommunityPage() {
   const [query, setQuery] = useState('')
   const [game, setGame] = useState('All games')
-  const [selectedCommunity, setSelectedCommunity] = useState<(typeof communityData)[number] | null>(null)
   const [showCreateInfo, setShowCreateInfo] = useState(false)
   const loadCommunities = useCallback(
     (signal: AbortSignal) => communitiesApi.list({ limit: 100, signal }),
@@ -210,10 +180,6 @@ function CommunityPage() {
   const liveCommunities = useApiResource(loadCommunities, 'communities')
   const liveGames = useApiResource(loadGames, 'community-game-catalog')
   const showingLive = liveCommunities.data !== null
-  const filteredSample = communityData.filter((community) => {
-    const matchesQuery = `${community.name} ${community.game} ${community.region}`.toLowerCase().includes(query.toLowerCase())
-    return matchesQuery && (game === 'All games' || community.game === game)
-  })
   const filteredLive = (liveCommunities.data ?? []).filter((community) => {
     const gameName = gameNameForId(community.game_id, liveGames.data)
     const matchesQuery = `${community.name} ${community.region} ${community.description ?? ''} ${gameName ?? ''} ${community.game_id}`.toLowerCase().includes(query.toLowerCase())
@@ -222,14 +188,14 @@ function CommunityPage() {
 
   return (
     <div className="platform-page">
-      <PageIntro eyebrow="FIND YOUR PEOPLE" title="Communities" description="Explore gaming groups, find your corner of the Nexus, and meet players who love the same games you do.">
-        <div className="page-actions"><PreviewLabel>{showingLive ? 'LIVE DIRECTORY' : 'SAMPLE DATA'}</PreviewLabel><button type="button" className="button button-outline" onClick={() => setShowCreateInfo(true)}>Create a community <ArrowRight size={14} /></button></div>
+      <PageIntro eyebrow="FIND YOUR PEOPLE" title="Communities" description="Explore gaming groups returned by the connected community directory.">
+        <div className="page-actions"><PreviewLabel>{showingLive ? 'LIVE DIRECTORY' : liveCommunities.loading ? 'LOADING' : 'NO LIVE DATA'}</PreviewLabel><button type="button" className="button button-outline" onClick={() => setShowCreateInfo(true)}>Create a community <ArrowRight size={14} /></button></div>
       </PageIntro>
-      <ApiDataNotice resource={liveCommunities} sourceName="Community directory" fallbackText="The sample community directory is shown instead." />
+      <ApiDataNotice resource={liveCommunities} sourceName="Community directory" fallbackText="No live community listings are available." />
       <div className="directory-toolbar">
         <SearchField value={query} onChange={setQuery} label="Search communities" />
         <FilterSelect value={game} onChange={setGame} options={gameOptions} label="Filter communities by game" />
-        <span className="result-count">{showingLive ? filteredLive.length : filteredSample.length} {showingLive ? 'LIVE' : 'SAMPLE'} COMMUNITIES</span>
+        <span className="result-count">{showingLive ? `${filteredLive.length} LIVE COMMUNITIES` : liveCommunities.loading ? 'LOADING COMMUNITIES' : 'NO LIVE LISTINGS'}</span>
       </div>
       {showingLive ? (
         <div className="directory-grid">
@@ -245,34 +211,8 @@ function CommunityPage() {
           ))}
           {filteredLive.length === 0 && <div className="page-empty"><Search size={22} /><strong>No live communities found</strong><span>The API returned no records for these filters.</span></div>}
         </div>
-      ) : (
-        <>
-          <div className="directory-grid">
-            {filteredSample.map((community) => {
-              const Icon = community.icon
-              return (
-                <article className="directory-card community-directory-card" key={community.name}>
-                  <div className={`directory-emblem ${community.color}`}><Icon size={22} aria-hidden="true" /></div>
-                  <div className="directory-card-heading"><PreviewLabel /><span>{community.region}</span></div>
-                  <h2>{community.name}</h2>
-                  <p>{community.game} <span>·</span> {community.focus}</p>
-                  <div className="directory-card-foot"><span><Users size={14} aria-hidden="true" /> {community.players} players</span><span>COMMUNITY PREVIEW</span></div>
-                  <button type="button" className="card-action" onClick={() => setSelectedCommunity(community)}>View community details <ArrowRight size={14} aria-hidden="true" /></button>
-                </article>
-              )
-            })}
-          </div>
-          {filteredSample.length === 0 && <div className="page-empty"><Search size={22} /><strong>No communities found</strong><span>Try a different search or game filter.</span></div>}
-        </>
-      )}
-      {selectedCommunity && (
-        <PreviewDialog title={selectedCommunity.name} onClose={() => setSelectedCommunity(null)}>
-          <div className="detail-emblem"><Users size={23} aria-hidden="true" /></div>
-          <p className="preview-dialog-description">{selectedCommunity.description}</p>
-          <div className="preview-detail-grid"><span>GAME<strong>{selectedCommunity.game}</strong></span><span>REGION<strong>{selectedCommunity.region}</strong></span><span>MEMBERS<strong>{selectedCommunity.players} · SAMPLE</strong></span></div>
-          <p className="action-unavailable">Joining is not available yet. No membership will be created.</p>
-          <button type="button" className="button button-primary" disabled title="Membership changes are not supported by the read-only API">Join community <ArrowRight size={14} /></button>
-        </PreviewDialog>
+      ) : !liveCommunities.loading && (
+        <div className="page-empty"><Users size={22} /><strong>No live community listings</strong><span>The directory will show communities when the API returns records.</span></div>
       )}
       {showCreateInfo && (
         <PreviewDialog title="Create a community" onClose={() => setShowCreateInfo(false)}>
@@ -586,7 +526,6 @@ function PlayersPage() {
 
 function TournamentsPage() {
   const [game, setGame] = useState('All games')
-  const [selectedTournament, setSelectedTournament] = useState<(typeof tournamentData)[number] | null>(null)
   const loadTournaments = useCallback(
     (signal: AbortSignal) => tournamentsApi.list({ limit: 100, signal }),
     [],
@@ -598,20 +537,19 @@ function TournamentsPage() {
   const liveTournaments = useApiResource(loadTournaments, 'tournaments')
   const liveGames = useApiResource(loadGames, 'tournament-game-catalog')
   const showingLive = liveTournaments.data !== null
-  const filteredSample = tournamentData.filter((tournament) => game === 'All games' || tournament.game === game)
   const filteredLive = (liveTournaments.data ?? []).filter((tournament) => (
     game === 'All games' || gameNameForId(tournament.game_id, liveGames.data) === game
   ))
 
   return (
     <div className="platform-page">
-      <PageIntro eyebrow="COMPETE TOGETHER" title="Tournaments" description={showingLive ? 'Browse tournament listings from the API; bracket and match-result previews remain illustrative.' : 'Explore event categories, preview brackets, and check the sample schedule.'}>
-        <PreviewLabel>{showingLive ? 'LIVE LISTINGS' : 'DEMO SCHEDULE'}</PreviewLabel>
+      <PageIntro eyebrow="COMPETE TOGETHER" title="Tournaments" description="Browse published event listings. Brackets, results, and registration are not available through the current API.">
+        <PreviewLabel>{showingLive ? 'LIVE LISTINGS' : liveTournaments.loading ? 'LOADING' : 'NO LIVE DATA'}</PreviewLabel>
       </PageIntro>
-      <ApiDataNotice resource={liveTournaments} sourceName="Tournament listings" fallbackText="The sample schedule is shown instead." />
+      <ApiDataNotice resource={liveTournaments} sourceName="Tournament listings" fallbackText="No live tournament listings are available." />
       <div className="directory-toolbar">
         <FilterSelect value={game} onChange={setGame} options={gameOptions} label="Filter tournaments by game" />
-        <span className="result-count">{showingLive ? filteredLive.length : filteredSample.length} {showingLive ? 'LIVE' : 'SAMPLE'} EVENTS</span>
+        <span className="result-count">{showingLive ? `${filteredLive.length} LIVE EVENTS` : liveTournaments.loading ? 'LOADING EVENTS' : 'NO LIVE EVENTS'}</span>
       </div>
       {showingLive ? (
         <div className="tournament-page-list">
@@ -628,47 +566,18 @@ function TournamentsPage() {
           ))}
           {filteredLive.length === 0 && <div className="page-empty"><CalendarDays size={22} /><strong>No live tournaments found</strong><span>The API returned no records for these filters.</span></div>}
         </div>
-      ) : (
-        <>
-          <div className="tournament-page-list">
-            {filteredSample.map((tournament, index) => (
-              <article className="tournament-page-card" key={tournament.name}>
-                <div className="tournament-page-date"><CalendarDays size={16} aria-hidden="true" /><span>{tournament.date}</span></div>
-                <div className="tournament-page-main"><span>{tournament.game.toUpperCase()}</span><h2>{tournament.name}</h2><span className="tournament-status">{tournament.status} · SAMPLE</span></div>
-                <div className="tournament-page-prize"><span>PRIZE POOL</span><strong>{tournament.prize}</strong></div>
-                <div className="tournament-page-actions">
-                  <span className="tournament-page-number">0{index + 1}</span>
-                  <button type="button" className="tournament-register" disabled title="The API currently exposes read-only tournament listings">Registration unavailable</button>
-                  <button type="button" className="tournament-bracket-link" onClick={() => setSelectedTournament(tournament)}>Event details <ArrowRight size={13} aria-hidden="true" /></button>
-                </div>
-              </article>
-            ))}
-          </div>
-          {filteredSample.length === 0 && <div className="page-empty"><CalendarDays size={22} /><strong>No sample events for this game</strong><span>Choose another game category.</span></div>}
-        </>
+      ) : !liveTournaments.loading && (
+        <div className="page-empty"><CalendarDays size={22} /><strong>No live tournament listings</strong><span>Published tournaments will appear here when the API returns records.</span></div>
       )}
       <section className="bracket-preview">
-        <div className="bracket-heading"><div><p className="eyebrow">EVENT FORMAT</p><h2>Bracket preview</h2></div><PreviewLabel>NOT LIVE</PreviewLabel></div>
-        <div className="bracket-grid">
-          <div className="bracket-round"><span>ROUND 1 · EXAMPLE ONLY</span><div><strong>Example Team A</strong><span>vs</span><strong>Example Team B</strong></div><div><strong>Example Team C</strong><span>vs</span><strong>Example Team D</strong></div></div>
-          <div className="bracket-connector"><ChevronRight /><ChevronRight /></div>
-          <div className="bracket-round"><span>FINAL · TBD</span><div className="bracket-tbd"><span>Matchups will appear after event registration</span></div></div>
-        </div>
-        <p className="bracket-note">Example bracket layout only. No teams are registered and no match results are shown.</p>
+        <div className="bracket-heading"><div><p className="eyebrow">EVENT FORMAT</p><h2>Tournament brackets</h2></div><PreviewLabel>NOT AVAILABLE</PreviewLabel></div>
+        <div className="page-empty bracket-empty"><Trophy size={22} /><strong>No bracket data</strong><span>The tournament API does not currently provide brackets or matchups.</span></div>
       </section>
       <section className="match-results-preview">
         <div><p className="eyebrow">MATCH RESULTS</p><h2>No results published</h2></div>
-        <p>Results will appear here after the tournament service is connected and matches are verified. No sample scores are presented as live results.</p>
-        <PreviewLabel>NO LIVE DATA</PreviewLabel>
+        <p>Verified results will appear here when the tournament API supports match data.</p>
+        <PreviewLabel>NOT AVAILABLE</PreviewLabel>
       </section>
-      {!showingLive && selectedTournament && (
-        <PreviewDialog title={selectedTournament.name} onClose={() => setSelectedTournament(null)}>
-          <p className="preview-dialog-description">{selectedTournament.game} · {selectedTournament.date} · sample schedule only.</p>
-          <div className="preview-detail-grid"><span>STATUS<strong>{selectedTournament.status} · SAMPLE</strong></span><span>PRIZE POOL<strong>{selectedTournament.prize}</strong></span><span>RESULTS<strong>NOT AVAILABLE</strong></span></div>
-          <p className="action-unavailable">Registration and match data are not connected. No entry or result will be recorded.</p>
-          <button type="button" className="button button-primary" disabled>Registration unavailable <ArrowRight size={14} /></button>
-        </PreviewDialog>
-      )}
     </div>
   )
 }
@@ -676,7 +585,6 @@ function TournamentsPage() {
 function LeaderboardsPage() {
   const [game, setGame] = useState('All games')
   const [scope, setScope] = useState('Global')
-  const [country, setCountry] = useState('All countries')
   const loadLeaderboard = useCallback(
     (signal: AbortSignal) => leaderboardsApi.list({ scope: 'global', limit: 100, signal }),
     [],
@@ -688,61 +596,47 @@ function LeaderboardsPage() {
   const leaderboard = useApiResource(loadLeaderboard, 'global-leaderboard', scope === 'Global')
   const liveGames = useApiResource(loadGames, 'leaderboard-game-catalog')
   const showingLive = scope === 'Global' && leaderboard.data !== null
-  const countries = ['All countries', ...new Set(leaderboardData.map((player) => player.country))]
-  const filteredSample = leaderboardData.filter((player) => (
-    (game === 'All games' || player.game === game) &&
-    (scope !== 'Country' || country === 'All countries' || player.country === country)
-  ))
   const filteredLive = (leaderboard.data ?? []).filter((entry) => (
     game === 'All games' || gameNameForId(entry.game_id, liveGames.data) === game
   ))
-  const displayedGames = showingLive
-    ? new Set(filteredLive.map((entry) => entry.game_id)).size
-    : new Set(filteredSample.map((player) => player.game)).size
+  const displayedGames = new Set(filteredLive.map((entry) => entry.game_id)).size
 
   return (
     <div className="platform-page">
-      <PageIntro eyebrow="PROVE YOUR PLACE" title="Leaderboards" description={showingLive ? 'View global scores returned by the connected leaderboard API.' : 'Switch between illustrative global and country views, narrow the sample list by game, and preview achievement badges.'}>
-        <PreviewLabel>{showingLive ? 'LIVE GLOBAL RANKINGS' : 'DEMO RANKINGS'}</PreviewLabel>
+      <PageIntro eyebrow="PROVE YOUR PLACE" title="Leaderboards" description={showingLive ? 'View global scores returned by the connected leaderboard API.' : scope === 'Country' ? 'Country rankings are unavailable because the API does not provide country ranking data.' : 'Global rankings will appear when the leaderboard API returns records.'}>
+        <PreviewLabel>{showingLive ? 'LIVE GLOBAL RANKINGS' : scope === 'Country' ? 'COUNTRY RANKINGS UNAVAILABLE' : leaderboard.loading ? 'LOADING' : 'NO LIVE DATA'}</PreviewLabel>
       </PageIntro>
       {scope === 'Global'
-        ? <ApiDataNotice resource={leaderboard} sourceName="Global leaderboard" fallbackText="Illustrative sample rankings are shown instead." />
-        : <p className="api-data-notice" role="status">Country rankings are sample-only; the API does not expose private country data.</p>}
+        ? <ApiDataNotice resource={leaderboard} sourceName="Global leaderboard" fallbackText="No live ranking data is available." />
+        : <p className="api-data-notice" role="status">Country rankings are unavailable; the API does not expose country ranking data.</p>}
       <div className="directory-toolbar">
         <FilterSelect value={scope} onChange={setScope} options={['Global', 'Country']} label="Select ranking scope" />
-        <FilterSelect value={game} onChange={setGame} options={gameOptions} label="Filter leaderboard by game" />
-        {!showingLive && <FilterSelect value={country} onChange={setCountry} options={countries} label="Filter sample leaderboard by country" disabled={scope !== 'Country'} />}
-        <span className="result-count">{showingLive ? filteredLive.length : filteredSample.length} {showingLive ? 'LIVE' : 'SAMPLE'} RANKED PLAYERS</span>
+        <FilterSelect value={game} onChange={setGame} options={gameOptions} label="Filter leaderboard by game" disabled={scope === 'Country'} />
+        {showingLive && <span className="result-count">{filteredLive.length} LIVE RANKED PLAYERS</span>}
       </div>
-      <div className="leaderboard-stats">
-        <div><span>VIEW</span><strong>{scope.toUpperCase()} {showingLive ? 'LIVE' : 'SAMPLE'} RANKING</strong></div>
-        <div><span>GAMES REPRESENTED</span><strong>{displayedGames}{showingLive ? '' : ' · SAMPLE'}</strong></div>
-        <div><span>ACHIEVEMENTS</span><strong>{showingLive ? 'NOT PROVIDED BY API' : <><Medal size={14} aria-hidden="true" /> BADGES PREVIEW</>}</strong></div>
-      </div>
-      {showingLive ? (
-        <section className="ranking-table is-live" aria-label="Live global player rankings">
-          <div className="ranking-table-header"><span>RANK</span><span>PUBLIC USER ID</span><span>GAME</span><span>SCORE</span></div>
-          {filteredLive.map((entry: LeaderboardEntry) => (
-            <div className="ranking-table-row" key={`${entry.game_id}-${entry.user_id}`}>
-              <strong>{entry.rank}</strong>
-              <span className="api-user-id">{entry.user_id}</span>
-              <span>{gameNameForId(entry.game_id, liveGames.data) ?? `Game ID ${entry.game_id.slice(0, 8)}`}</span>
-              <strong>{new Intl.NumberFormat().format(entry.score)}</strong>
-            </div>
-          ))}
-          {filteredLive.length === 0 && <div className="page-empty"><Trophy size={22} /><strong>No live rankings found</strong><span>The API returned no records for this filter.</span></div>}
-        </section>
-      ) : (
-        <section className="ranking-table" aria-label="Sample player rankings">
-          <div className="ranking-table-header"><span>RANK / PLAYER</span><span>GAME</span><span>COUNTRY</span><span>RATING</span><span>CHANGE</span></div>
-          {filteredSample.map((player, index) => (
-            <div className="ranking-table-row" key={player.name}>
-              <span className="ranking-player"><strong className="ranking-index">{String(index + 1).padStart(2, '0')}</strong><span className={`profile-avatar small ${player.color}`}>{player.avatar}</span><span><strong>{player.name}</strong><small>{player.tag}</small><small className="achievement-badge"><Medal size={11} aria-hidden="true" /> {player.badge}</small></span></span>
-              <span>{player.game}</span><span>{player.country}</span><strong>{player.score}</strong><span className="ranking-change"><Zap size={13} aria-hidden="true" />{player.change}</span>
-            </div>
-          ))}
-          {filteredSample.length === 0 && <div className="page-empty"><Trophy size={22} /><strong>No sample rankings for this filter</strong><span>Choose a different game or country.</span></div>}
-        </section>
+      {showingLive && (
+        <>
+          <div className="leaderboard-stats">
+            <div><span>VIEW</span><strong>GLOBAL LIVE RANKING</strong></div>
+            <div><span>GAMES REPRESENTED</span><strong>{displayedGames}</strong></div>
+            <div><span>ACHIEVEMENTS</span><strong>NOT PROVIDED BY API</strong></div>
+          </div>
+          <section className="ranking-table is-live" aria-label="Live global player rankings">
+            <div className="ranking-table-header"><span>RANK</span><span>PUBLIC USER ID</span><span>GAME</span><span>SCORE</span></div>
+            {filteredLive.map((entry: LeaderboardEntry) => (
+              <div className="ranking-table-row" key={`${entry.game_id}-${entry.user_id}`}>
+                <strong>{entry.rank}</strong>
+                <span className="api-user-id">{entry.user_id}</span>
+                <span>{gameNameForId(entry.game_id, liveGames.data) ?? `Game ID ${entry.game_id.slice(0, 8)}`}</span>
+                <strong>{new Intl.NumberFormat().format(entry.score)}</strong>
+              </div>
+            ))}
+            {filteredLive.length === 0 && <div className="page-empty"><Trophy size={22} /><strong>No live rankings found</strong><span>The API returned no records for this filter.</span></div>}
+          </section>
+        </>
+      )}
+      {!showingLive && !(scope === 'Global' && leaderboard.loading) && (
+        <div className="page-empty"><Trophy size={22} /><strong>{scope === 'Country' ? 'Country rankings unavailable' : 'No live rankings available'}</strong><span>{scope === 'Country' ? 'The API does not provide country ranking data.' : 'Global rankings will appear here when the API returns records.'}</span></div>
       )}
     </div>
   )
@@ -840,18 +734,8 @@ function TeamsPage() {
 function NewsPage() {
   return (
     <div className="platform-page">
-      <PageIntro eyebrow="FROM AROUND THE NEXUS" title="Gaming news" description="Stories, highlights, and community updates from across the gaming world.">
-        <PreviewLabel />
-      </PageIntro>
-      <PreviewNote>Editorial cards are sample content for the page preview, not published articles.</PreviewNote>
-      <div className="news-page-grid">
-        {newsData.map((story) => (
-          <article className="news-page-card" key={story.title}>
-            <div className="news-page-image"><img src={story.image} alt="" loading="lazy" /><PreviewLabel /></div>
-            <div className="news-page-copy"><div className="news-page-meta"><span>{story.category}</span><span>{story.date}</span></div><h2>{story.title}</h2><p>Preview story · Editorial content will be available when the news experience is connected.</p></div>
-          </article>
-        ))}
-      </div>
+      <PageIntro eyebrow="FROM AROUND THE NEXUS" title="Gaming news" description="Verified news articles will appear here when the news service is available." />
+      <div className="page-empty"><Globe2 size={22} /><strong>No news published</strong><span>There are no verified articles to display right now.</span></div>
     </div>
   )
 }
