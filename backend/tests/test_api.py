@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -15,11 +17,19 @@ from app.main import app
 client = TestClient(app)
 USER_ID = "00000000-0000-0000-0000-000000000001"
 GAME_ID = "00000000-0000-0000-0000-000000000002"
+COMMUNITY_ID = "00000000-0000-0000-0000-000000000003"
+IDEMPOTENCY_KEY = "00000000-0000-0000-0000-000000000004"
 
 
 class FakeRepository:
     def __init__(self) -> None:
         self.queries: list[tuple[str, dict[str, object]]] = []
+        self.community_creation_requests: dict[
+            str,
+            tuple[dict[str, object], dict[str, object]],
+        ] = {}
+        self.community_creation_count = 0
+        self.community_creation_lock = Lock()
         self.rows = {
             "player_directory": [
                 {
@@ -31,6 +41,9 @@ class FakeRepository:
                 {
                     "id": USER_ID,
                     "display_name": "Test Player",
+                    "username": "test_player",
+                    "avatar_url": None,
+                    "bio": None,
                     "favorite_games": ["Valorant"],
                     "platform": "PC",
                     "country": "Japan",
@@ -52,6 +65,8 @@ class FakeRepository:
                     "region": "Global",
                     "member_count": 1,
                     "description": None,
+                    "logo_url": None,
+                    "banner_url": None,
                 }
             ],
             "team_directory": [
@@ -115,6 +130,77 @@ class FakeRepository:
             None,
         )
 
+    def update_player_profile(
+        self,
+        user_id: str,
+        fields: dict[str, object],
+    ) -> dict[str, object] | None:
+        self.queries.append(
+            ("player_profiles:update", {"user_id": user_id, "fields": fields})
+        )
+        profile = next(
+            (
+                row
+                for row in self.rows["player_profiles"]
+                if row["id"] == user_id
+            ),
+            None,
+        )
+        if profile is None:
+            return None
+        profile.update(fields)
+        return self.apply_aliases(
+            profile,
+            (
+                "user_id:id,display_name,username,avatar_url,bio,"
+                "favorite_games,platform,country"
+            ),
+        )
+
+    def create_community(
+        self,
+        fields: dict[str, object],
+        idempotency_key: UUID,
+    ) -> dict[str, object]:
+        key = str(idempotency_key)
+        with self.community_creation_lock:
+            self.queries.append(
+                (
+                    "communities:create",
+                    {"idempotency_key": key, "fields": fields},
+                )
+            )
+            existing = self.community_creation_requests.get(key)
+            if existing is not None:
+                previous_fields, previous_community = existing
+                if previous_fields != fields:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This idempotency key was already used with different community details.",
+                    )
+                return previous_community
+
+            self.community_creation_count += 1
+            community = {
+                "id": COMMUNITY_ID,
+                "name": fields["name"],
+                "game_id": fields["game_id"],
+                "region": fields["region"],
+                "member_count": 1,
+                "description": fields["description"],
+                "logo_url": fields["logo_url"],
+                "banner_url": fields["banner_url"],
+            }
+            response = self.apply_aliases(
+                community,
+                (
+                    "community_id:id,name,game_id,region,member_count,description,"
+                    "logo_url,banner_url"
+                ),
+            )
+            self.community_creation_requests[key] = (dict(fields), response)
+            return response
+
 
 @pytest.fixture
 def repository():
@@ -122,6 +208,17 @@ def repository():
     app.dependency_overrides[get_repository] = lambda: fake_repository
     yield fake_repository
     app.dependency_overrides.clear()
+
+
+def valid_community_create() -> dict[str, object]:
+    return {
+        "name": "Nexus Raiders",
+        "game_id": GAME_ID,
+        "region": "Global",
+        "description": "A community for coordinated matches.",
+        "logo_url": "https://images.example.com/logo.png",
+        "banner_url": None,
+    }
 
 
 def test_resource_collections_return_typed_data(repository: FakeRepository) -> None:
@@ -146,6 +243,248 @@ def test_resource_collections_return_typed_data(repository: FakeRepository) -> N
         "tournaments",
         "leaderboard_entries",
     ]
+
+
+def test_community_list_and_detail_still_return_directory_data(
+    repository: FakeRepository,
+) -> None:
+    list_response = client.get("/api/v1/communities")
+    detail_response = client.get(f"/api/v1/communities/{GAME_ID}")
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert list_response.json()[0]["member_count"] == 1
+    assert detail_response.json()["logo_url"] is None
+    assert detail_response.json()["banner_url"] is None
+    assert [table for table, _ in repository.queries] == [
+        "community_directory",
+        "community_directory",
+    ]
+
+
+def test_community_creation_requires_authentication(
+    repository: FakeRepository,
+) -> None:
+    response = client.post("/api/v1/communities", json=valid_community_create())
+
+    assert response.status_code == 401
+    assert repository.queries == []
+
+
+def test_cors_allows_community_creation_post() -> None:
+    response = client.options(
+        "/api/v1/communities",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
+def test_authenticated_user_creates_community_with_verified_ownership(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    response = client.post(
+        "/api/v1/communities",
+        json=valid_community_create(),
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "community_id": COMMUNITY_ID,
+        "name": "Nexus Raiders",
+        "game_id": GAME_ID,
+        "region": "Global",
+        "member_count": 1,
+        "description": "A community for coordinated matches.",
+        "logo_url": "https://images.example.com/logo.png",
+        "banner_url": None,
+    }
+    assert repository.queries[-1] == (
+        "communities:create",
+        {
+            "idempotency_key": IDEMPOTENCY_KEY,
+            "fields": valid_community_create(),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["owner_id", "role", "member_count", "community_id", "id"],
+)
+def test_community_creation_rejects_forbidden_client_fields(
+    repository: FakeRepository,
+    field: str,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+    payload = valid_community_create()
+    payload[field] = USER_ID
+
+    response = client.post(
+        "/api/v1/communities",
+        json=payload,
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert response.status_code == 422
+    assert not any(table == "communities:create" for table, _ in repository.queries)
+
+
+def test_community_creation_rejects_unknown_game(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+    payload = valid_community_create()
+    payload["game_id"] = "00000000-0000-0000-0000-000000000099"
+
+    response = client.post(
+        "/api/v1/communities",
+        json=payload,
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "The selected game does not exist."
+    assert not any(table == "communities:create" for table, _ in repository.queries)
+
+
+def test_unexpected_community_database_errors_are_not_exposed(
+    repository: FakeRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    def fail_creation(
+        fields: dict[str, object],
+        idempotency_key: UUID,
+    ) -> dict[str, object]:
+        assert fields["name"] == "Nexus Raiders"
+        assert idempotency_key == UUID(IDEMPOTENCY_KEY)
+        raise RuntimeError("internal database endpoint detail")
+
+    monkeypatch.setattr(repository, "create_community", fail_creation)
+    safe_client = TestClient(app, raise_server_exceptions=False)
+
+    response = safe_client.post(
+        "/api/v1/communities",
+        json=valid_community_create(),
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert response.status_code == 500
+    assert "internal database endpoint detail" not in response.text
+
+
+def test_community_creation_requires_an_idempotency_key(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    response = client.post("/api/v1/communities", json=valid_community_create())
+
+    assert response.status_code == 422
+    assert not any(table == "communities:create" for table, _ in repository.queries)
+
+
+def test_community_creation_retry_returns_the_original_record(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    first = client.post(
+        "/api/v1/communities",
+        json=valid_community_create(),
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+    retry = client.post(
+        "/api/v1/communities",
+        json=valid_community_create(),
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert first.status_code == retry.status_code == 201
+    assert retry.json() == first.json()
+    assert repository.community_creation_count == 1
+
+
+def test_community_creation_rejects_reusing_key_with_different_payload(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+    changed_payload = valid_community_create()
+    changed_payload["name"] = "Different Raiders"
+
+    first = client.post(
+        "/api/v1/communities",
+        json=valid_community_create(),
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+    conflict = client.post(
+        "/api/v1/communities",
+        json=changed_payload,
+        headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "This idempotency key was already used with different community details."
+    )
+    assert repository.community_creation_count == 1
+
+
+def test_concurrent_duplicate_community_requests_create_once(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    def create():
+        return client.post(
+            "/api/v1/communities",
+            json=valid_community_create(),
+            headers={"Idempotency-Key": IDEMPOTENCY_KEY},
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        responses = list(executor.map(lambda _: create(), range(8)))
+
+    assert all(response.status_code == 201 for response in responses)
+    assert {response.json()["community_id"] for response in responses} == {
+        COMMUNITY_ID,
+    }
+    assert repository.community_creation_count == 1
 
 
 def test_public_user_directory_uses_safe_projection(
@@ -175,6 +514,13 @@ def test_private_profile_requires_authentication(repository: FakeRepository) -> 
     assert repository.queries == []
 
 
+def test_current_profile_requires_authentication(repository: FakeRepository) -> None:
+    response = client.get("/api/v1/profiles/me")
+
+    assert response.status_code == 401
+    assert repository.queries == []
+
+
 def test_authenticated_user_can_read_own_private_profile(
     repository: FakeRepository,
 ) -> None:
@@ -189,10 +535,29 @@ def test_authenticated_user_can_read_own_private_profile(
     assert response.json() == {
         "user_id": USER_ID,
         "display_name": "Test Player",
+        "username": "test_player",
+        "avatar_url": None,
+        "bio": None,
         "favorite_games": ["Valorant"],
         "platform": "PC",
         "country": "Japan",
     }
+
+
+def test_authenticated_user_can_read_current_profile(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    response = client.get("/api/v1/profiles/me")
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == USER_ID
+    assert response.json()["username"] == "test_player"
+    assert repository.queries[-1][1]["resource_id"] == USER_ID
 
 
 def test_authenticated_user_cannot_read_another_private_profile(
@@ -207,6 +572,118 @@ def test_authenticated_user_cannot_read_another_private_profile(
     response = client.get(f"/api/v1/profiles/{other_user_id}")
 
     assert response.status_code == 404
+    assert repository.queries == []
+
+
+def valid_profile_update() -> dict[str, object]:
+    return {
+        "display_name": "Updated Player",
+        "username": "Updated_Player",
+        "avatar_url": "https://images.example.com/avatar.png",
+        "bio": "Ready to play.",
+        "favorite_games": ["Valorant", "Apex Legends"],
+        "platform": "PC",
+        "country": "Japan",
+    }
+
+
+def test_authenticated_user_updates_only_their_current_profile(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+
+    response = client.patch(
+        "/api/v1/profiles/me",
+        json=valid_profile_update(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": USER_ID,
+        "display_name": "Updated Player",
+        "username": "updated_player",
+        "avatar_url": "https://images.example.com/avatar.png",
+        "bio": "Ready to play.",
+        "favorite_games": ["Valorant", "Apex Legends"],
+        "platform": "PC",
+        "country": "Japan",
+    }
+    assert repository.queries[-1] == (
+        "player_profiles:update",
+        {
+            "user_id": USER_ID,
+            "fields": {
+                "display_name": "Updated Player",
+                "username": "updated_player",
+                "avatar_url": "https://images.example.com/avatar.png",
+                "bio": "Ready to play.",
+                "favorite_games": ["Valorant", "Apex Legends"],
+                "platform": "PC",
+                "country": "Japan",
+            },
+        },
+    )
+
+
+def test_profile_update_rejects_client_supplied_user_id(
+    repository: FakeRepository,
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+    payload = valid_profile_update()
+    payload["user_id"] = "00000000-0000-0000-0000-000000000003"
+
+    response = client.patch("/api/v1/profiles/me", json=payload)
+
+    assert response.status_code == 422
+    assert repository.queries == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"display_name": "x"},
+        {"username": "not a username"},
+        {"avatar_url": "http://images.example.com/avatar.png"},
+        {"avatar_url": "https://user:pass@images.example.com/avatar.png"},
+        {"avatar_url": f"https://images.example.com/{'a' * 2050}"},
+        {"bio": "x" * 281},
+        {"favorite_games": ["Valorant"] * 21},
+        {"country": "x" * 57},
+        {"platform": "x" * 81},
+    ],
+)
+def test_profile_update_rejects_invalid_fields(
+    repository: FakeRepository,
+    changes: dict[str, object],
+) -> None:
+    app.dependency_overrides[get_authenticated_repository] = lambda: (
+        UUID(USER_ID),
+        repository,
+    )
+    payload = valid_profile_update()
+    payload.update(changes)
+
+    response = client.patch("/api/v1/profiles/me", json=payload)
+
+    assert response.status_code == 422
+    assert repository.queries == []
+
+
+def test_current_profile_update_requires_authentication(
+    repository: FakeRepository,
+) -> None:
+    response = client.patch(
+        "/api/v1/profiles/me",
+        json=valid_profile_update(),
+    )
+
+    assert response.status_code == 401
     assert repository.queries == []
 
 
@@ -379,6 +856,21 @@ def test_frontend_origin_is_allowed_by_cors() -> None:
     )
 
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_frontend_can_preflight_profile_updates() -> None:
+    response = client.options(
+        "/api/v1/profiles/me",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "PATCH" in response.headers["access-control-allow-methods"]
 
 
 def test_openapi_lists_resource_groups() -> None:

@@ -1,15 +1,18 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.db.dependencies import get_authenticated_repository, get_repository
 from app.db.supabase import SupabaseRepository
 from app.schemas import (
+    CommunityCreateRequest,
+    CommunityCreateResponse,
     CommunitySummary,
     GameSummary,
     LeaderboardEntry,
     PlayerProfile,
+    PlayerProfileUpdate,
     TeamSummary,
     TournamentSummary,
     UserSummary,
@@ -74,6 +77,53 @@ def get_user(user_id: UUID, repository: RepositoryDependency) -> UserSummary:
     return user
 
 
+def read_profile(repository: SupabaseRepository, user_id: UUID) -> PlayerProfile:
+    profile = repository.get_row(
+        "player_profiles",
+        str(user_id),
+        columns=(
+            "user_id:id,display_name,username,avatar_url,bio,"
+            "favorite_games,platform,country"
+        ),
+    )
+    if profile is None:
+        raise not_found("Profile", user_id)
+    return profile
+
+
+@router.get(
+    "/profiles/me",
+    response_model=PlayerProfile,
+    tags=["Profiles"],
+    summary="Get the authenticated player's profile",
+)
+def get_my_profile(
+    authenticated_repository: AuthenticatedRepositoryDependency,
+) -> PlayerProfile:
+    authenticated_user_id, repository = authenticated_repository
+    return read_profile(repository, authenticated_user_id)
+
+
+@router.patch(
+    "/profiles/me",
+    response_model=PlayerProfile,
+    tags=["Profiles"],
+    summary="Update the authenticated player's profile",
+)
+def update_my_profile(
+    profile: PlayerProfileUpdate,
+    authenticated_repository: AuthenticatedRepositoryDependency,
+) -> PlayerProfile:
+    authenticated_user_id, repository = authenticated_repository
+    updated_profile = repository.update_player_profile(
+        str(authenticated_user_id),
+        profile.model_dump(exclude_unset=True, mode="json"),
+    )
+    if updated_profile is None:
+        raise not_found("Profile", authenticated_user_id)
+    return updated_profile
+
+
 @router.get(
     "/profiles/{user_id}",
     response_model=PlayerProfile,
@@ -88,14 +138,7 @@ def get_profile(
     if authenticated_user_id != user_id:
         raise not_found("Profile", user_id)
 
-    profile = repository.get_row(
-        "player_profiles",
-        str(user_id),
-        columns="user_id:id,display_name,favorite_games,platform,country",
-    )
-    if profile is None:
-        raise not_found("Profile", user_id)
-    return profile
+    return read_profile(repository, user_id)
 
 
 @router.get(
@@ -152,11 +195,40 @@ def list_communities(
     filters = {"game_id": str(game_id)} if game_id else None
     return repository.list_rows(
         "community_directory",
-        columns="community_id:id,name,game_id,region,member_count,description",
+        columns=(
+            "community_id:id,name,game_id,region,member_count,description,"
+            "logo_url,banner_url"
+        ),
         filters=filters,
         order_by="name",
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post(
+    "/communities",
+    response_model=CommunityCreateResponse,
+    status_code=201,
+    tags=["Communities"],
+    summary="Create a community",
+)
+def create_community(
+    community: CommunityCreateRequest,
+    authenticated_repository: AuthenticatedRepositoryDependency,
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> CommunityCreateResponse:
+    _, repository = authenticated_repository
+    game = repository.get_row("games", str(community.game_id), columns="id")
+    if game is None:
+        raise HTTPException(
+            status_code=422,
+            detail="The selected game does not exist.",
+        )
+
+    return repository.create_community(
+        community.model_dump(mode="json"),
+        idempotency_key,
     )
 
 
@@ -173,7 +245,10 @@ def get_community(
     community = repository.get_row(
         "community_directory",
         str(community_id),
-        columns="community_id:id,name,game_id,region,member_count,description",
+        columns=(
+            "community_id:id,name,game_id,region,member_count,description,"
+            "logo_url,banner_url"
+        ),
     )
     if community is None:
         raise not_found("Community", community_id)

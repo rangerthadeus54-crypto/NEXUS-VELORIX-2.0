@@ -6,10 +6,15 @@ export type UserSummary = {
 export type PlayerProfileRecord = {
   user_id: string
   display_name: string
+  username: string | null
+  avatar_url: string | null
+  bio: string | null
   favorite_games: string[]
   platform: string | null
   country: string | null
 }
+
+export type PlayerProfileUpdate = Omit<PlayerProfileRecord, 'user_id'>
 
 export type GameSummary = {
   game_id: string
@@ -25,6 +30,17 @@ export type CommunitySummary = {
   region: string
   member_count: number
   description: string | null
+  logo_url?: string | null
+  banner_url?: string | null
+}
+
+export type CommunityCreateRequest = {
+  name: string
+  game_id: string
+  region: string
+  description: string
+  logo_url: string | null
+  banner_url: string | null
 }
 
 export type TeamSummary = {

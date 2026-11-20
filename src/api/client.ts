@@ -29,8 +29,11 @@ export class ApiError extends Error {
 export type ApiRequestOptions = {
   authenticated?: boolean
   accessToken?: string | null
+  headers?: HeadersInit
   signal?: AbortSignal
 }
+
+type ApiMethod = 'GET' | 'POST' | 'PATCH'
 
 function getApiBaseUrl() {
   const configuredUrl = import.meta.env.VITE_API_BASE_URL?.trim()
@@ -68,12 +71,27 @@ function statusMessage(status: number, detail: string | null) {
 
 function responseDetail(body: unknown): string | null {
   if (typeof body !== 'object' || body === null || !('detail' in body)) return null
-  return typeof body.detail === 'string' ? body.detail : null
+  if (typeof body.detail === 'string') return body.detail
+  if (!Array.isArray(body.detail)) return null
+
+  const messages = body.detail.flatMap((issue: unknown) => {
+    if (typeof issue !== 'object' || issue === null || !('msg' in issue)) return []
+    if (typeof issue.msg !== 'string') return []
+    const location = 'loc' in issue && Array.isArray(issue.loc)
+      ? issue.loc.filter((part): part is string | number => (
+          typeof part === 'string' || typeof part === 'number'
+        )).slice(1).join('.')
+      : ''
+    return [location ? `${location}: ${issue.msg}` : issue.msg]
+  })
+
+  return messages.length > 0 ? messages.join(' ') : null
 }
 
-export async function apiGet<T>(
+async function apiRequest<T>(
   path: string,
-  options: ApiRequestOptions = {},
+  method: ApiMethod,
+  options: ApiRequestOptions & { body?: unknown } = {},
 ): Promise<T> {
   const baseUrl = getApiBaseUrl()
   let token: string | null | undefined
@@ -93,10 +111,12 @@ export async function apiGet<T>(
     }
   }
 
-  const headers = new Headers({ Accept: 'application/json' })
+  const headers = new Headers(options.headers)
+  headers.set('Accept', 'application/json')
+  if (options.body !== undefined) headers.set('Content-Type', 'application/json')
   if (options.authenticated === true) {
     if (typeof token !== 'string' || token.trim() === '') {
-      throw new ApiError('unauthorized', 'Sign in to access your private profile.', 401)
+      throw new ApiError('unauthorized', 'Sign in to access this resource.', 401)
     }
     headers.set('Authorization', `Bearer ${token.trim()}`)
   }
@@ -104,8 +124,9 @@ export async function apiGet<T>(
   let response: Response
   try {
     response = await fetch(`${baseUrl}${path}`, {
-      method: 'GET',
+      method,
       headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     })
   } catch (error) {
@@ -140,4 +161,27 @@ export async function apiGet<T>(
   }
 
   return body as T
+}
+
+export function apiGet<T>(
+  path: string,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  return apiRequest<T>(path, 'GET', options)
+}
+
+export function apiPatch<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  return apiRequest<T>(path, 'PATCH', { ...options, body })
+}
+
+export function apiPost<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  return apiRequest<T>(path, 'POST', { ...options, body })
 }

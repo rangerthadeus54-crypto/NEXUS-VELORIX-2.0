@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams, useRoutes } from 'react-router-dom'
 import {
+  ArrowLeft,
   ArrowRight,
   CalendarDays,
   Clock3,
@@ -18,9 +19,8 @@ import {
   Zap,
   X,
 } from 'lucide-react'
-import { getPlayerProfile, useAuth } from '../auth/AuthContext'
-import type { PlayerProfile } from '../auth/AuthContext'
 import { ApiError } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import {
   communitiesApi,
   gamesApi,
@@ -31,9 +31,12 @@ import {
   usersApi,
 } from '../api/services'
 import type {
+  CommunityCreateRequest,
   CommunitySummary,
   GameSummary,
   LeaderboardEntry,
+  PlayerProfileRecord,
+  PlayerProfileUpdate,
   TeamSummary,
   TournamentSummary,
 } from '../api/types'
@@ -46,7 +49,8 @@ import { useRecentlyPlayedGames } from '../hooks/useRecentlyPlayedGames'
 import './PlatformPages.css'
 
 const gameOptions = ['All games', ...featuredGameNames]
-const gameNames = featuredGameNames
+const profileGameNames = allGames.map(({ name }) => name)
+const communityIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
 
 const playerData = [
   { name: 'vexx', tag: '#NXR', game: 'Valorant', country: 'Sweden', region: 'Europe', rank: 'Radiant', avatar: 'V', color: 'purple', looking: 'Ranked · evenings' },
@@ -121,15 +125,27 @@ function formatStartDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
-function PreviewDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function PreviewDialog({
+  title,
+  children,
+  onClose,
+  eyebrow = 'FEATURE PREVIEW',
+  autoFocusClose = true,
+}: {
+  title: string
+  children: ReactNode
+  onClose: () => void
+  eyebrow?: string
+  autoFocusClose?: boolean
+}) {
   return (
     <div className="preview-dialog-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
       <section className="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-dialog-title">
         <div className="preview-dialog-heading">
-          <div><p className="eyebrow">FEATURE PREVIEW</p><h2 id="preview-dialog-title">{title}</h2></div>
-          <button type="button" className="preview-dialog-close" onClick={onClose} aria-label="Close dialog" autoFocus><X size={18} /></button>
+          <div><p className="eyebrow">{eyebrow}</p><h2 id="preview-dialog-title">{title}</h2></div>
+          <button type="button" className="preview-dialog-close" onClick={onClose} aria-label="Close dialog" autoFocus={autoFocusClose}><X size={18} /></button>
         </div>
         {children}
       </section>
@@ -165,10 +181,513 @@ function FilterSelect({ value, onChange, options, label, disabled = false }: {
   )
 }
 
+type CommunityDraft = {
+  name: string
+  gameSlug: string
+  region: string
+  description: string
+  logoUrl: string
+  bannerUrl: string
+}
+
+type CommunityIdempotencyEntry = {
+  fingerprint: string
+  key: string
+  createdAt: number
+}
+
+const communityIdempotencyStoragePrefix = 'nexus-velorix.community-create-idempotency.v1'
+const communityIdempotencyRetentionMs = 30 * 24 * 60 * 60 * 1000
+const communityIdempotencyMaxEntries = 20
+const communityIdempotencyEntryPattern = /^[0-9a-f]{64}$/
+const inMemoryCommunityIdempotency = new Map<string, string>()
+
+async function hashIdempotencyValue(value: string): Promise<string | null> {
+  if (typeof window === 'undefined' || !window.crypto?.subtle || typeof TextEncoder === 'undefined') return null
+
+  try {
+    const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  } catch {
+    return null
+  }
+}
+
+function isCommunityIdempotencyEntry(value: unknown): value is CommunityIdempotencyEntry {
+  if (!value || typeof value !== 'object') return false
+  const entry = value as Partial<CommunityIdempotencyEntry>
+  return typeof entry.fingerprint === 'string'
+    && communityIdempotencyEntryPattern.test(entry.fingerprint)
+    && typeof entry.key === 'string'
+    && communityIdPattern.test(entry.key)
+    && typeof entry.createdAt === 'number'
+    && Number.isFinite(entry.createdAt)
+}
+
+function readCommunityIdempotencyEntries(storageKey: string): CommunityIdempotencyEntry[] | null {
+  if (typeof window === 'undefined') return null
+
+  let serialized: string | null
+  try {
+    serialized = window.localStorage.getItem(storageKey)
+  } catch {
+    return null
+  }
+  if (!serialized) return []
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    try {
+      window.localStorage.removeItem(storageKey)
+    } catch {
+      return []
+    }
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+
+  const oldestAllowed = Date.now() - communityIdempotencyRetentionMs
+  return parsed
+    .filter(isCommunityIdempotencyEntry)
+    .filter(({ createdAt }) => createdAt >= oldestAllowed && createdAt <= Date.now())
+    .slice(-communityIdempotencyMaxEntries)
+}
+
+function writeCommunityIdempotencyEntries(storageKey: string, entries: CommunityIdempotencyEntry[]) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(entries.slice(-communityIdempotencyMaxEntries)))
+  } catch {
+    // Storage is best-effort; the in-memory cache still supports retries in this page session.
+  }
+}
+
+async function getCommunityIdempotencyKey(userId: string, payload: CommunityCreateRequest): Promise<string> {
+  const serializedPayload = JSON.stringify(payload)
+  const [userScope, fingerprint] = await Promise.all([
+    hashIdempotencyValue(userId),
+    hashIdempotencyValue(serializedPayload),
+  ])
+  const memoryFingerprint = `${userScope ?? userId}:${fingerprint ?? serializedPayload}`
+  const cachedKey = inMemoryCommunityIdempotency.get(memoryFingerprint)
+  if (cachedKey) return cachedKey
+
+  if (userScope && fingerprint) {
+    const storageKey = `${communityIdempotencyStoragePrefix}.${userScope}`
+    const entries = readCommunityIdempotencyEntries(storageKey)
+    const existing = entries?.find((entry) => entry.fingerprint === fingerprint)
+    if (existing) {
+      inMemoryCommunityIdempotency.set(memoryFingerprint, existing.key)
+      return existing.key
+    }
+
+    const key = crypto.randomUUID()
+    const nextEntries = [
+      ...(entries ?? []),
+      { fingerprint, key, createdAt: Date.now() },
+    ].slice(-communityIdempotencyMaxEntries)
+    writeCommunityIdempotencyEntries(storageKey, nextEntries)
+    inMemoryCommunityIdempotency.set(memoryFingerprint, key)
+    return key
+  }
+
+  const key = crypto.randomUUID()
+  inMemoryCommunityIdempotency.set(memoryFingerprint, key)
+  return key
+}
+
+async function forgetCommunityIdempotencyKey(userId: string, payload: CommunityCreateRequest, key: string) {
+  const serializedPayload = JSON.stringify(payload)
+  const [userScope, fingerprint] = await Promise.all([
+    hashIdempotencyValue(userId),
+    hashIdempotencyValue(serializedPayload),
+  ])
+  const memoryFingerprint = `${userScope ?? userId}:${fingerprint ?? serializedPayload}`
+  if (inMemoryCommunityIdempotency.get(memoryFingerprint) === key) {
+    inMemoryCommunityIdempotency.delete(memoryFingerprint)
+  }
+  if (!userScope || !fingerprint) return
+
+  const storageKey = `${communityIdempotencyStoragePrefix}.${userScope}`
+  const entries = readCommunityIdempotencyEntries(storageKey)
+  if (entries) {
+    writeCommunityIdempotencyEntries(
+      storageKey,
+      entries.filter((entry) => entry.fingerprint !== fingerprint || entry.key !== key),
+    )
+  }
+}
+
+function isValidHttpsImageUrl(value: string) {
+  if (!value.trim()) return true
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'https:' && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function CommunityDraftPreview({ draft }: { draft: CommunityDraft }) {
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
+  const [failedBannerUrl, setFailedBannerUrl] = useState<string | null>(null)
+  const game = allGames.find(({ slug }) => slug === draft.gameSlug)
+  const logoUrl = isValidHttpsImageUrl(draft.logoUrl) ? draft.logoUrl.trim() : ''
+  const bannerUrl = isValidHttpsImageUrl(draft.bannerUrl) ? draft.bannerUrl.trim() : ''
+
+  return (
+    <aside className="community-create-preview" aria-label="Live community preview">
+      <div className="community-create-preview-banner">
+        {bannerUrl && failedBannerUrl !== bannerUrl && (
+          <img
+            src={bannerUrl}
+            alt=""
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setFailedBannerUrl(bannerUrl)}
+          />
+        )}
+        <div className="community-create-preview-logo">
+          {logoUrl && failedLogoUrl !== logoUrl
+            ? <img src={logoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedLogoUrl(logoUrl)} />
+            : <Users size={24} aria-hidden="true" />}
+        </div>
+      </div>
+      <div className="community-create-preview-content">
+        <span className="sample-tag">PREVIEW ONLY · NOT SAVED</span>
+        <h3>{draft.name.trim() || 'Community name'}</h3>
+        <p>{game?.name ?? 'Select a game'}{draft.region.trim() ? ` · ${draft.region.trim()}` : ''}</p>
+        <p>{draft.description.trim() || 'Your community description will appear here.'}</p>
+      </div>
+    </aside>
+  )
+}
+
+type CommunityCreationFormProps = {
+  userId: string
+  games: GameSummary[] | null
+  gamesLoading: boolean
+  gamesError: string | null
+  directoryRefreshing: boolean
+  directoryRefreshError: string | null
+  onRetryGames: () => void
+  onCreated: () => void
+}
+
+type CommunityFormStatus = {
+  kind: 'info' | 'success' | 'error'
+  message: string
+} | null
+
+function CommunityCreationForm({
+  userId,
+  games,
+  gamesLoading,
+  gamesError,
+  directoryRefreshing,
+  directoryRefreshError,
+  onRetryGames,
+  onCreated,
+}: CommunityCreationFormProps) {
+  const [draft, setDraft] = useState<CommunityDraft>({
+    name: '',
+    gameSlug: '',
+    region: '',
+    description: '',
+    logoUrl: '',
+    bannerUrl: '',
+  })
+  const [status, setStatus] = useState<CommunityFormStatus>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [createdCommunity, setCreatedCommunity] = useState<CommunitySummary | null>(null)
+  const submissionInProgress = useRef(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+  const regionInputRef = useRef<HTMLInputElement>(null)
+  const descriptionInputRef = useRef<HTMLTextAreaElement>(null)
+  const logoInputRef = useRef<HTMLInputElement>(null)
+  const bannerInputRef = useRef<HTMLInputElement>(null)
+  const selectedDatabaseGame = games?.find(({ slug }) => slug === draft.gameSlug)
+  const gameId = selectedDatabaseGame?.game_id
+  const hasValidGameId = Boolean(gameId && communityIdPattern.test(gameId))
+
+  const validateDraft = (form: HTMLFormElement) => {
+    const name = nameInputRef.current
+    const region = regionInputRef.current
+    const description = descriptionInputRef.current
+    const logo = logoInputRef.current
+    const banner = bannerInputRef.current
+
+    name?.setCustomValidity(name.value.trim().length < 3 ? 'Enter a community name with at least 3 non-space characters.' : '')
+    region?.setCustomValidity(region.value.trim().length < 2 ? 'Enter a region with at least 2 non-space characters.' : '')
+    description?.setCustomValidity(description.value.trim().length < 20 ? 'Enter a description with at least 20 non-space characters.' : '')
+    logo?.setCustomValidity(isValidHttpsImageUrl(logo.value) ? '' : 'Enter a valid HTTPS image URL.')
+    banner?.setCustomValidity(isValidHttpsImageUrl(banner.value) ? '' : 'Enter a valid HTTPS image URL.')
+
+    return form.reportValidity()
+  }
+
+  const handlePreviewValidation = () => {
+    const form = formRef.current
+    if (!form || !validateDraft(form)) {
+      setStatus(null)
+      return
+    }
+    if (!hasValidGameId) {
+      setStatus({
+        kind: 'error',
+        message: 'This game is not available in the connected database catalog and cannot be submitted.',
+      })
+      return
+    }
+    setStatus({
+      kind: 'info',
+      message: 'Draft validation passed. This preview has not been submitted.',
+    })
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (submissionInProgress.current || createdCommunity) return
+    if (!validateDraft(event.currentTarget)) {
+      setStatus(null)
+      return
+    }
+    if (!gameId || !communityIdPattern.test(gameId)) {
+      setStatus({
+        kind: 'error',
+        message: 'This game is not available in the connected database catalog and cannot be submitted.',
+      })
+      return
+    }
+
+    const payload: CommunityCreateRequest = {
+      name: draft.name.trim(),
+      game_id: gameId,
+      region: draft.region.trim(),
+      description: draft.description.trim(),
+      logo_url: draft.logoUrl.trim() || null,
+      banner_url: draft.bannerUrl.trim() || null,
+    }
+    submissionInProgress.current = true
+    setSubmitting(true)
+    setStatus({ kind: 'info', message: 'Creating community…' })
+    try {
+      const idempotencyKey = await getCommunityIdempotencyKey(userId, payload)
+      const created = await communitiesApi.create(payload, idempotencyKey)
+      if (!communityIdPattern.test(created.community_id)) {
+        throw new ApiError('invalid_response', 'The API returned an invalid community ID.')
+      }
+      await forgetCommunityIdempotencyKey(userId, payload, idempotencyKey)
+      setCreatedCommunity(created)
+      setStatus({
+        kind: 'success',
+        message: 'Community created. The API confirmed the saved record.',
+      })
+      onCreated()
+    } catch (error) {
+      setStatus({
+        kind: 'error',
+        message: error instanceof ApiError
+          ? error.message
+          : 'Community creation could not be completed. Please try again.',
+      })
+    } finally {
+      submissionInProgress.current = false
+      setSubmitting(false)
+    }
+  }
+
+  const updateImageUrl = (field: 'logoUrl' | 'bannerUrl', value: string, input: HTMLInputElement) => {
+    input.setCustomValidity(isValidHttpsImageUrl(value) ? '' : 'Enter a valid HTTPS image URL.')
+    setDraft((current) => ({ ...current, [field]: value }))
+    setStatus(null)
+  }
+
+  return (
+    <div className="community-create-layout">
+      <form ref={formRef} className="community-create-form" onSubmit={handleSubmit}>
+        <p className="community-create-notice">
+          Creation is sent to the connected API. A community is saved only after the API confirms the created record.
+        </p>
+        <div className="profile-form-fields community-create-fields">
+          <label className="community-create-full-field">
+            Community name
+            <input
+              ref={nameInputRef}
+              autoFocus
+              name="communityName"
+              type="text"
+              value={draft.name}
+              onChange={(event) => {
+                nameInputRef.current?.setCustomValidity(event.target.value.trim().length < 3 ? 'Enter a community name with at least 3 non-space characters.' : '')
+                setDraft((current) => ({ ...current, name: event.target.value }))
+                setStatus(null)
+              }}
+              minLength={3}
+              maxLength={120}
+              autoComplete="organization"
+              required
+              disabled={submitting || createdCommunity !== null}
+            />
+            <small>3–120 characters</small>
+          </label>
+          <label>
+            Game
+            <select
+              name="game"
+              value={draft.gameSlug}
+              onChange={(event) => {
+                setDraft((current) => ({ ...current, gameSlug: event.target.value }))
+                setStatus(null)
+              }}
+              disabled={gamesLoading || gamesError !== null || submitting || createdCommunity !== null}
+              required
+            >
+              <option value="">Select a game</option>
+              {allGames.map((game) => <option key={game.slug} value={game.slug}>{game.name}</option>)}
+            </select>
+          </label>
+          {gamesLoading && <small className="community-create-game-state" role="status">Loading database-backed games…</small>}
+          {gamesError && (
+            <p className="community-create-game-error" role="alert">
+              The game catalog is unavailable: {gamesError}
+              <button type="button" onClick={onRetryGames}>Retry games</button>
+            </p>
+          )}
+          {draft.gameSlug && !gamesLoading && !gamesError && !hasValidGameId && (
+            <p className="community-create-game-error" role="alert">
+              {allGames.find(({ slug }) => slug === draft.gameSlug)?.name ?? 'This game'} is not available in the connected database catalog and cannot be submitted.
+            </p>
+          )}
+          <label>
+            Region
+            <input
+              ref={regionInputRef}
+              name="region"
+              type="text"
+              value={draft.region}
+              onChange={(event) => {
+                regionInputRef.current?.setCustomValidity(event.target.value.trim().length < 2 ? 'Enter a region with at least 2 non-space characters.' : '')
+                setDraft((current) => ({ ...current, region: event.target.value }))
+                setStatus(null)
+              }}
+              minLength={2}
+              maxLength={80}
+              autoComplete="country-name"
+              required
+              disabled={submitting || createdCommunity !== null}
+            />
+          </label>
+          <label className="profile-bio-field community-create-full-field">
+            Description
+            <textarea
+              ref={descriptionInputRef}
+              name="description"
+              value={draft.description}
+              onChange={(event) => {
+                descriptionInputRef.current?.setCustomValidity(event.target.value.trim().length < 20 ? 'Enter a description with at least 20 non-space characters.' : '')
+                setDraft((current) => ({ ...current, description: event.target.value }))
+                setStatus(null)
+              }}
+              minLength={20}
+              maxLength={500}
+              rows={4}
+              required
+              disabled={submitting || createdCommunity !== null}
+            />
+            <small>{draft.description.length}/500 characters · at least 20 required</small>
+          </label>
+          <label className="community-create-full-field">
+            Logo URL <span className="community-create-optional">(optional)</span>
+            <input
+              ref={logoInputRef}
+              name="logoUrl"
+              type="url"
+              value={draft.logoUrl}
+              onChange={(event) => updateImageUrl('logoUrl', event.target.value, event.currentTarget)}
+              pattern="https://.+"
+              maxLength={2048}
+              placeholder="https://example.com/logo.png"
+              aria-describedby="community-logo-help"
+              disabled={submitting || createdCommunity !== null}
+            />
+            <small id="community-logo-help">Use a valid HTTPS image URL.</small>
+          </label>
+          <label className="community-create-full-field">
+            Banner URL <span className="community-create-optional">(optional)</span>
+            <input
+              ref={bannerInputRef}
+              name="bannerUrl"
+              type="url"
+              value={draft.bannerUrl}
+              onChange={(event) => updateImageUrl('bannerUrl', event.target.value, event.currentTarget)}
+              pattern="https://.+"
+              maxLength={2048}
+              placeholder="https://example.com/banner.jpg"
+              aria-describedby="community-banner-help"
+              disabled={submitting || createdCommunity !== null}
+            />
+            <small id="community-banner-help">Use a valid HTTPS image URL.</small>
+          </label>
+        </div>
+        {status && (
+          <p className={`community-create-status is-${status.kind}`} role={status.kind === 'error' ? 'alert' : 'status'}>
+            {status.message}
+          </p>
+        )}
+        <div className="community-create-actions">
+          <button
+            className="button button-outline"
+            type="button"
+            onClick={handlePreviewValidation}
+            disabled={submitting || createdCommunity !== null}
+          >
+            Validate preview
+          </button>
+          <button
+            className="button button-primary"
+            type="submit"
+            disabled={submitting || createdCommunity !== null || gamesLoading || gamesError !== null || !hasValidGameId}
+          >
+            {submitting ? 'Creating…' : 'Create community'}
+          </button>
+        </div>
+        {createdCommunity && (
+          <div className="community-create-follow-up">
+            {directoryRefreshing ? (
+              <p role="status">Refreshing the community directory…</p>
+            ) : (
+              <>
+                {directoryRefreshError ? (
+                  <p role="alert">Community creation succeeded, but the directory could not be refreshed: {directoryRefreshError}</p>
+                ) : (
+                  <p role="status">Community directory refreshed.</p>
+                )}
+                <Link
+                  className="button button-primary"
+                  to={`/community/${encodeURIComponent(createdCommunity.community_id)}`}
+                >
+                  View community <ArrowRight size={14} aria-hidden="true" />
+                </Link>
+              </>
+            )}
+          </div>
+        )}
+      </form>
+      <CommunityDraftPreview draft={draft} />
+    </div>
+  )
+}
+
 function CommunityPage() {
   const [query, setQuery] = useState('')
   const [game, setGame] = useState('All games')
-  const [showCreateInfo, setShowCreateInfo] = useState(false)
+  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const { user, loading: authLoading } = useAuth()
   const loadCommunities = useCallback(
     (signal: AbortSignal) => communitiesApi.list({ limit: 100, signal }),
     [],
@@ -189,7 +708,19 @@ function CommunityPage() {
   return (
     <div className="platform-page">
       <PageIntro eyebrow="FIND YOUR PEOPLE" title="Communities" description="Explore gaming groups returned by the connected community directory.">
-        <div className="page-actions"><PreviewLabel>{showingLive ? 'LIVE DIRECTORY' : liveCommunities.loading ? 'LOADING' : 'NO LIVE DATA'}</PreviewLabel><button type="button" className="button button-outline" onClick={() => setShowCreateInfo(true)}>Create a community <ArrowRight size={14} /></button></div>
+        <div className="page-actions">
+          <PreviewLabel>{showingLive ? 'LIVE DIRECTORY' : liveCommunities.loading ? 'LOADING' : 'NO LIVE DATA'}</PreviewLabel>
+          <button
+            type="button"
+            className="button button-outline"
+            onClick={() => setShowCreateDialog(true)}
+            disabled={authLoading}
+            aria-haspopup="dialog"
+            aria-expanded={showCreateDialog}
+          >
+            {authLoading ? 'Checking session…' : 'Create a community'} <ArrowRight size={14} aria-hidden="true" />
+          </button>
+        </div>
       </PageIntro>
       <ApiDataNotice resource={liveCommunities} sourceName="Community directory" fallbackText="No live community listings are available." />
       <div className="directory-toolbar">
@@ -200,27 +731,177 @@ function CommunityPage() {
       {showingLive ? (
         <div className="directory-grid">
           {filteredLive.map((community: CommunitySummary) => (
-            <article className="directory-card community-directory-card" key={community.community_id}>
+            <Link
+              className="directory-card community-directory-card community-directory-link"
+              key={community.community_id}
+              to={`/community/${encodeURIComponent(community.community_id)}`}
+              aria-label={`View ${community.name} community details`}
+            >
               <div className="directory-emblem violet"><Users size={22} aria-hidden="true" /></div>
               <div className="directory-card-heading"><span className="live-data-label">LIVE</span><span>{community.region}</span></div>
               <h2>{community.name}</h2>
               <p>{gameNameForId(community.game_id, liveGames.data) ?? `Game ID ${community.game_id.slice(0, 8)}`}</p>
               {community.description && <p>{community.description}</p>}
               <div className="directory-card-foot"><span><Users size={14} aria-hidden="true" /> {community.member_count.toLocaleString()} members</span><span>API RECORD</span></div>
-            </article>
+            </Link>
           ))}
           {filteredLive.length === 0 && <div className="page-empty"><Search size={22} /><strong>No live communities found</strong><span>The API returned no records for these filters.</span></div>}
         </div>
       ) : !liveCommunities.loading && (
         <div className="page-empty"><Users size={22} /><strong>No live community listings</strong><span>The directory will show communities when the API returns records.</span></div>
       )}
-      {showCreateInfo && (
-        <PreviewDialog title="Create a community" onClose={() => setShowCreateInfo(false)}>
-          <p className="preview-dialog-description">The community API currently supports read-only listings. This preview does not save drafts or create records.</p>
-          <p className="action-unavailable">Creation is currently unavailable. No data will be submitted or stored.</p>
-          <button type="button" className="button button-primary" disabled>Create community <ArrowRight size={14} /></button>
+      {showCreateDialog && (
+        <PreviewDialog
+          title={user ? 'Create a community' : 'Sign in to create a community'}
+          eyebrow={user ? 'COMMUNITY SETUP' : 'ACCOUNT REQUIRED'}
+          autoFocusClose={!user}
+          onClose={() => setShowCreateDialog(false)}
+        >
+          {user ? (
+            <CommunityCreationForm
+              userId={user.id}
+              games={liveGames.data}
+              gamesLoading={liveGames.loading}
+              gamesError={liveGames.error?.message ?? null}
+              directoryRefreshing={liveCommunities.loading}
+              directoryRefreshError={liveCommunities.error?.message ?? null}
+              onRetryGames={liveGames.retry}
+              onCreated={liveCommunities.retry}
+            />
+          ) : (
+            <div className="community-auth-gate">
+              <p>Sign in to create a community. Your account is required to submit and manage a community.</p>
+              <Link className="button button-primary" to="/login">Sign in <ArrowRight size={14} aria-hidden="true" /></Link>
+            </div>
+          )}
         </PreviewDialog>
       )}
+    </div>
+  )
+}
+
+function CommunityArtwork({ community }: { community: CommunitySummary }) {
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
+  const [failedBannerUrl, setFailedBannerUrl] = useState<string | null>(null)
+
+  return (
+    <div className="community-detail-artwork">
+      {community.banner_url && failedBannerUrl !== community.banner_url && (
+        <img
+          className="community-detail-banner-image"
+          src={community.banner_url}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setFailedBannerUrl(community.banner_url ?? null)}
+        />
+      )}
+      <div className="community-detail-banner-caption">COMMUNITY PROFILE</div>
+      <div className="community-detail-logo">
+        {community.logo_url && failedLogoUrl !== community.logo_url
+          ? <img src={community.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedLogoUrl(community.logo_url ?? null)} />
+          : <Users size={31} aria-hidden="true" />}
+      </div>
+    </div>
+  )
+}
+
+function CommunityDetailPage() {
+  const { communityId = '' } = useParams()
+  const validCommunityId = communityIdPattern.test(communityId)
+  const loadCommunity = useCallback(
+    (signal: AbortSignal) => communitiesApi.get(communityId, { signal }),
+    [communityId],
+  )
+  const communityResource = useApiResource(
+    loadCommunity,
+    `community:${communityId}`,
+    validCommunityId,
+  )
+  const gameId = communityResource.data?.game_id
+  const loadGame = useCallback(
+    (signal: AbortSignal) => gamesApi.get(gameId ?? '', { signal }),
+    [gameId],
+  )
+  const gameResource = useApiResource(
+    loadGame,
+    `community-game:${gameId ?? 'unavailable'}`,
+    Boolean(gameId),
+  )
+  const community = communityResource.data
+  const notFound = !validCommunityId
+    || communityResource.error?.kind === 'not_found'
+    || communityResource.error?.status === 404
+    || communityResource.error?.status === 422
+
+  return (
+    <div className="platform-page">
+      <PageIntro
+        eyebrow="COMMUNITY PROFILE"
+        title={community?.name ?? (notFound ? 'Community not found' : 'Community details')}
+        description="Community information is provided by the connected directory."
+      >
+        <Link className="button button-outline" to="/community">
+          <ArrowLeft size={14} aria-hidden="true" /> Back to Communities
+        </Link>
+      </PageIntro>
+      {!validCommunityId ? (
+        <div className="community-detail-state page-empty" role="status">
+          <Users size={22} aria-hidden="true" />
+          <strong>Community not found</strong>
+          <span>The community ID in this link is invalid.</span>
+        </div>
+      ) : communityResource.loading ? (
+        <div className="community-detail-state page-empty" role="status">
+          <Users size={22} aria-hidden="true" />
+          <strong>Loading community</strong>
+          <span>Community details are being requested from the API.</span>
+        </div>
+      ) : notFound ? (
+        <div className="community-detail-state page-empty" role="status">
+          <Users size={22} aria-hidden="true" />
+          <strong>Community not found</strong>
+          <span>This community may have been removed or is not available.</span>
+        </div>
+      ) : communityResource.error ? (
+        <div className="community-detail-error api-data-notice is-error" role="alert">
+          <span>Community details are unavailable: {communityResource.error.message}</span>
+          <button type="button" onClick={communityResource.retry}>Retry</button>
+        </div>
+      ) : community ? (
+        <section className="community-detail-card" aria-label={`${community.name} community details`}>
+          <CommunityArtwork community={community} />
+          <div className="community-detail-content">
+            <section className="community-detail-about" aria-labelledby="community-about-title">
+              <p className="eyebrow">ABOUT THIS COMMUNITY</p>
+              <h2 id="community-about-title">About the community</h2>
+              <p>{community.description || 'No description has been added.'}</p>
+            </section>
+            <dl className="community-detail-facts">
+              <div>
+                <dt>GAME</dt>
+                <dd>
+                  {gameResource.data?.name ?? (gameResource.loading ? 'Loading game details…' : 'Game information unavailable')}
+                  {gameResource.error && (
+                    <button className="community-game-retry" type="button" onClick={gameResource.retry}>
+                      Retry game lookup
+                    </button>
+                  )}
+                </dd>
+              </div>
+              <div><dt>REGION</dt><dd>{community.region}</dd></div>
+              <div><dt>MEMBERS</dt><dd>{community.member_count.toLocaleString()}</dd></div>
+              <div><dt>COMMUNITY ID</dt><dd><code>{community.community_id}</code></dd></div>
+            </dl>
+          </div>
+          <div className="community-detail-actions">
+            <button className="button button-primary" type="button" disabled>
+              Join community <ArrowRight size={14} aria-hidden="true" />
+            </button>
+            <span>Joining and leaving are not available yet.</span>
+          </div>
+        </section>
+      ) : null}
     </div>
   )
 }
@@ -904,107 +1585,213 @@ function RequireSession({ children }: { children: ReactNode }) {
   return children
 }
 
+type ProfileDraft = Omit<
+  PlayerProfileUpdate,
+  'username' | 'avatar_url' | 'bio' | 'platform' | 'country'
+> & {
+  username: string
+  avatar_url: string
+  bio: string
+  platform: string
+  country: string
+}
+
+function profileToDraft(profile: PlayerProfileRecord): ProfileDraft {
+  return {
+    display_name: profile.display_name,
+    username: profile.username ?? '',
+    avatar_url: profile.avatar_url ?? '',
+    bio: profile.bio ?? '',
+    favorite_games: profile.favorite_games,
+    platform: profile.platform ?? '',
+    country: profile.country ?? '',
+  }
+}
+
+function ProfileAvatar({ url }: { url: string | null }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+
+  return (
+    <div className="profile-display-avatar">
+      {url && failedUrl !== url
+        ? <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailedUrl(url)} />
+        : <UserRound size={25} aria-hidden="true" />}
+    </div>
+  )
+}
+
 function ProfilePage() {
-  const { user, updatePlayerProfile } = useAuth()
-  const [profile, setProfile] = useState<PlayerProfile>(() => getPlayerProfile(user))
+  const { user } = useAuth()
+  const editProfileButtonRef = useRef<HTMLButtonElement>(null)
+  const displayNameInputRef = useRef<HTMLInputElement>(null)
+  const restoreEditButtonFocus = useRef(false)
+  const [profileOverride, setProfileOverride] = useState<{
+    userId: string
+    profile: PlayerProfileRecord
+  } | null>(null)
+  const [draft, setDraft] = useState<ProfileDraft | null>(null)
+  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const loadPrivateProfile = useCallback(
-    (signal: AbortSignal) => {
-      if (!user?.id) return Promise.reject(new ApiError('unauthorized', 'Sign in to access your private profile.', 401))
-      return profilesApi.get(user.id, { signal })
-    },
-    [user],
+    (signal: AbortSignal) => profilesApi.getCurrent({ signal }),
+    [],
   )
   const privateProfile = useApiResource(
     loadPrivateProfile,
     `private-profile:${user?.id ?? 'signed-out'}`,
     Boolean(user?.id),
   )
+  const profile = profileOverride && profileOverride.userId === user?.id
+    ? profileOverride.profile
+    : privateProfile.data
+
+  useEffect(() => {
+    if (editing) {
+      displayNameInputRef.current?.focus()
+    } else if (restoreEditButtonFocus.current) {
+      editProfileButtonRef.current?.focus()
+      restoreEditButtonFocus.current = false
+    }
+  }, [editing])
 
   const updateFavoriteGame = (game: string, selected: boolean) => {
-    setProfile((current) => ({
-      ...current,
-      favoriteGames: selected
-        ? [...current.favoriteGames, game]
-        : current.favoriteGames.filter((favorite) => favorite !== game),
-    }))
+    setDraft((current) => {
+      if (!current) return current
+      if (selected && current.favorite_games.length >= 20) return current
+      return {
+        ...current,
+        favorite_games: selected
+          ? [...current.favorite_games, game]
+          : current.favorite_games.filter((favorite) => favorite !== game),
+      }
+    })
   }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!draft) return
     setError('')
     setMessage('')
     setBusy(true)
-    const result = await updatePlayerProfile(profile)
-    setBusy(false)
 
-    if (result.error) {
-      setError(result.error)
-      return
+    try {
+      const updatedProfile = await profilesApi.updateCurrent({
+        display_name: draft.display_name,
+        username: draft.username.trim() || null,
+        avatar_url: draft.avatar_url.trim() || null,
+        bio: draft.bio.trim() || null,
+        favorite_games: draft.favorite_games,
+        platform: draft.platform.trim() || null,
+        country: draft.country.trim() || null,
+      })
+      setProfileOverride({ userId: updatedProfile.user_id, profile: updatedProfile })
+      setDraft(profileToDraft(updatedProfile))
+      setEditing(false)
+      setMessage('Your player profile has been saved.')
+      privateProfile.retry()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'The profile could not be saved.')
+    } finally {
+      setBusy(false)
     }
-    setMessage(result.message ?? 'Your player profile has been saved.')
   }
 
   return (
     <div className="platform-page">
-      <PageIntro eyebrow="PLAYER PROFILE" title="Make it yours" description="Review your private player record and update the profile details saved to your Supabase Auth user metadata.">
+      <PageIntro eyebrow="PLAYER PROFILE" title="Make it yours" description="Manage the profile information saved to your private player record.">
         <PreviewLabel>PRIVATE PROFILE</PreviewLabel>
       </PageIntro>
-      <ApiDataNotice resource={privateProfile} sourceName="Private database profile" fallbackText="The editable form remains available; changes here are saved to Auth metadata, not the read-only profile API." />
-      {privateProfile.data && (
-        <section className="api-profile-record" aria-label="Private profile returned by the API">
-          <div><span>DATABASE DISPLAY NAME</span><strong>{privateProfile.data.display_name || 'Not set'}</strong></div>
-          <div><span>COUNTRY</span><strong>{privateProfile.data.country || 'Not set'}</strong></div>
-          <div><span>PLATFORM</span><strong>{privateProfile.data.platform || 'Not set'}</strong></div>
-          <div><span>FAVORITE GAMES</span><strong>{privateProfile.data.favorite_games.length ? privateProfile.data.favorite_games.join(', ') : 'Not set'}</strong></div>
+      <ApiDataNotice resource={privateProfile} sourceName="Private player profile" fallbackText="Profile data requires the configured FastAPI service." />
+      {message && <div className="auth-result" role="status">{message}</div>}
+      {profile && !editing && (
+        <section className="profile-view-card" aria-label="Your player profile">
+          <div className="profile-view-header">
+            <ProfileAvatar url={profile.avatar_url} />
+            <div className="profile-view-identity">
+              <h2>{profile.display_name}</h2>
+              <span>{profile.username ? `@${profile.username}` : 'Username not set'}</span>
+            </div>
+            <button
+              ref={editProfileButtonRef}
+              className="button button-outline"
+              type="button"
+              onClick={() => {
+                restoreEditButtonFocus.current = true
+                setDraft(profileToDraft(profile))
+                setError('')
+                setMessage('')
+                setEditing(true)
+              }}
+            >
+              Edit profile <ArrowRight size={14} aria-hidden="true" />
+            </button>
+          </div>
+          <p className="profile-view-bio">{profile.bio || 'No bio added.'}</p>
+          <div className="profile-view-details">
+            <div><span>COUNTRY</span><strong>{profile.country || 'Not set'}</strong></div>
+            <div><span>GAMING PLATFORM</span><strong>{profile.platform || 'Not set'}</strong></div>
+            <div><span>FAVORITE GAMES</span><strong>{profile.favorite_games.length ? profile.favorite_games.join(', ') : 'Not set'}</strong></div>
+          </div>
         </section>
       )}
-      <PreviewNote>The private database record above is read-only. Saving this form updates your signed-in Supabase Auth metadata; the API does not expose a profile update endpoint.</PreviewNote>
-      <form className="profile-form" onSubmit={handleSubmit}>
-        <div className="profile-form-top">
-          <div className="profile-form-avatar"><UserRound size={24} aria-hidden="true" /></div>
-          <div><strong>{profile.displayName || 'Your player name'}</strong><span>{user?.email}</span></div>
-          <span className="profile-auth-state"><span /> SUPABASE ACCOUNT</span>
-        </div>
-        {error && <div className="auth-result is-error" role="alert">{error}</div>}
-        {message && <div className="auth-result" role="status">{message}</div>}
-        <div className="profile-form-fields">
-          <label>Player name<input type="text" value={profile.displayName} onChange={(event) => setProfile((current) => ({ ...current, displayName: event.target.value }))} placeholder="Choose a display name" minLength={2} maxLength={32} required /></label>
-          <label>Country<select value={profile.country} onChange={(event) => setProfile((current) => ({ ...current, country: event.target.value }))}><option value="">Select a country</option><option>Australia</option><option>Brazil</option><option>Canada</option><option>France</option><option>Germany</option><option>Japan</option><option>Sweden</option><option>United Kingdom</option><option>United States</option></select></label>
-          <label>Primary platform<select value={profile.platform} onChange={(event) => setProfile((current) => ({ ...current, platform: event.target.value }))}><option value="">Select a platform</option><option>PC</option><option>PlayStation</option><option>Xbox</option><option>Nintendo Switch</option><option>Mobile</option></select></label>
-        </div>
-        <fieldset className="favorite-games-fieldset">
-          <legend>Favorite games</legend>
-          <div className="favorite-games-grid">
-            {gameNames.map((game) => (
-              <label key={game}>
-                <input type="checkbox" checked={profile.favoriteGames.includes(game)} onChange={(event) => updateFavoriteGame(game, event.target.checked)} />
-                <span>{game}</span>
-              </label>
-            ))}
+      {editing && draft && (
+        <form className="profile-form" onSubmit={handleSubmit} aria-label="Edit player profile">
+          <div className="profile-form-top">
+            <ProfileAvatar url={draft.avatar_url || null} />
+            <div><strong>{draft.display_name || 'Your player name'}</strong><span>Changes are saved to your private database profile.</span></div>
           </div>
-        </fieldset>
-        <div className="profile-form-actions">
-          <Link className="text-link" to="/settings">Account settings <ArrowRight size={14} aria-hidden="true" /></Link>
-          <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save player profile'} <ArrowRight size={15} aria-hidden="true" /></button>
-        </div>
-      </form>
+          {error && <div className="auth-result is-error" role="alert">{error}</div>}
+          <div className="profile-form-fields">
+            <label>Display name<input ref={displayNameInputRef} type="text" value={draft.display_name} onChange={(event) => setDraft((current) => current && ({ ...current, display_name: event.target.value }))} minLength={2} maxLength={80} autoComplete="nickname" disabled={busy} required /></label>
+            <label>Username<input type="text" value={draft.username} onChange={(event) => setDraft((current) => current && ({ ...current, username: event.target.value.toLowerCase() }))} minLength={3} maxLength={24} pattern="[a-z0-9_]{3,24}" autoComplete="username" aria-describedby="profile-username-help" disabled={busy} /><small id="profile-username-help">3–24 lowercase letters, numbers, or underscores.</small></label>
+            <label>Avatar URL<input type="url" value={draft.avatar_url} onChange={(event) => setDraft((current) => current && ({ ...current, avatar_url: event.target.value }))} maxLength={2048} pattern="https://.+" placeholder="https://example.com/avatar.png" autoComplete="url" aria-describedby="profile-avatar-help" disabled={busy} /><small id="profile-avatar-help">Use an HTTPS image URL.</small></label>
+            <label>Country<input type="text" value={draft.country} onChange={(event) => setDraft((current) => current && ({ ...current, country: event.target.value }))} maxLength={56} autoComplete="country-name" disabled={busy} /></label>
+            <label>Gaming platform<input type="text" value={draft.platform} onChange={(event) => setDraft((current) => current && ({ ...current, platform: event.target.value }))} maxLength={80} placeholder="PC, PlayStation, Xbox…" disabled={busy} /></label>
+            <label className="profile-bio-field">Bio<textarea value={draft.bio} onChange={(event) => setDraft((current) => current && ({ ...current, bio: event.target.value }))} maxLength={280} rows={4} disabled={busy} /><small>{draft.bio.length}/280 characters</small></label>
+          </div>
+          <fieldset className="favorite-games-fieldset" aria-describedby="favorite-games-help" disabled={busy}>
+            <legend>Favorite games</legend>
+            <p className="favorite-games-help" id="favorite-games-help">Select up to 20 titles ({draft.favorite_games.length}/20 selected).</p>
+            <div className="favorite-games-grid">
+              {profileGameNames.map((game) => (
+                <label key={game}>
+                  <input type="checkbox" checked={draft.favorite_games.includes(game)} disabled={!draft.favorite_games.includes(game) && draft.favorite_games.length >= 20} onChange={(event) => updateFavoriteGame(game, event.target.checked)} />
+                  <span>{game}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="profile-form-actions">
+            <button className="button button-outline" type="button" disabled={busy} onClick={() => { setEditing(false); setDraft(null); setError('') }}>Cancel</button>
+            <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save profile'} <ArrowRight size={15} aria-hidden="true" /></button>
+          </div>
+        </form>
+      )}
     </div>
   )
 }
 
 function DashboardPage() {
   const { user } = useAuth()
-  const profile = getPlayerProfile(user)
-  const playerName = profile.displayName || user?.email?.split('@')[0] || 'player'
+  const loadPrivateProfile = useCallback(
+    (signal: AbortSignal) => profilesApi.getCurrent({ signal }),
+    [],
+  )
+  const privateProfile = useApiResource(
+    loadPrivateProfile,
+    `dashboard-profile:${user?.id ?? 'signed-out'}`,
+    Boolean(user?.id),
+  )
+  const playerName = privateProfile.data?.display_name || user?.email?.split('@')[0] || 'player'
 
   return (
     <div className="platform-page">
       <PageIntro eyebrow="PLAYER DASHBOARD" title={`Welcome, ${playerName}`} description="Your personal home for your games, profile, and next steps in the Nexus.">
         <PreviewLabel>SUPABASE SESSION</PreviewLabel>
       </PageIntro>
+      <ApiDataNotice resource={privateProfile} sourceName="Player profile" fallbackText="The dashboard title uses your account email while unavailable." />
       <div className="dashboard-lock-card">
         <div className="auth-icon"><UserRound size={22} aria-hidden="true" /></div>
         <div><h2>Your account is connected</h2><p>Signed in as {user?.email}. Community and tournament activity will appear when those platform services are connected.</p></div>
@@ -1027,7 +1814,7 @@ function SettingsPage() {
       <PageIntro eyebrow="MAKE IT YOURS" title="Settings" description="Manage your profile, preferences, and account security in one place.">
         <PreviewLabel>SUPABASE ACCOUNT</PreviewLabel>
       </PageIntro>
-      <PreviewNote>Signed in as {user?.email}. Account settings are limited to the currently implemented profile metadata and password recovery.</PreviewNote>
+      <PreviewNote>Signed in as {user?.email}. Account settings currently cover your database-backed player profile and password recovery.</PreviewNote>
       <section className="settings-preview">
         <div className="settings-row"><div className="settings-row-icon"><UserRound size={18} /></div><div><strong>Player profile</strong><span>Display name, country, platform, and favorite games</span></div><Link to="/profile" className="settings-row-link">Edit profile <ArrowRight size={14} /></Link></div>
         <div className="settings-row"><div className="settings-row-icon"><Globe2 size={18} /></div><div><strong>Privacy & discovery</strong><span>Public player discovery will be available with the profiles database.</span></div><span className="settings-state">NOT CONNECTED</span></div>
@@ -1051,6 +1838,7 @@ function NotFoundPage() {
 
 export default function PlatformPages() {
   return useRoutes([
+    { path: '/community/:communityId', element: <CommunityDetailPage /> },
     { path: '/community', element: <CommunityPage /> },
     { path: '/games', element: <GamesPage /> },
     { path: '/games/:gameSlug', element: <GameDetailsPage /> },

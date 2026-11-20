@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { AuthContext } from './AuthContext'
-import type { AuthResult, PlayerProfile } from './AuthContext'
+import type { AuthResult } from './AuthContext'
 import { authConfigurationError, supabaseClient } from './supabase'
 
 function getErrorMessage(error: unknown) {
@@ -94,28 +94,6 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const updatePlayerProfile = async (profile: PlayerProfile): Promise<AuthResult> => {
-    if (!supabaseClient) return { error: authConfigurationError ?? 'Supabase Auth is unavailable.' }
-
-    try {
-      const { data, error } = await supabaseClient.auth.updateUser({
-        data: {
-          display_name: profile.displayName.trim(),
-          favorite_games: profile.favoriteGames,
-          platform: profile.platform,
-          country: profile.country,
-        },
-      })
-
-      if (error) return { error: error.message }
-
-      setSession((current) => current ? { ...current, user: data.user } : current)
-      return { message: 'Your player profile has been saved.' }
-    } catch (error) {
-      return { error: getErrorMessage(error) }
-    }
-  }
-
   return (
     <AuthContext.Provider
       value={{
@@ -129,7 +107,6 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         signOut,
         resetPassword,
         updatePassword,
-        updatePlayerProfile,
       }}
     >
       {children}

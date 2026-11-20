@@ -11,7 +11,7 @@ app = FastAPI(
     version=settings.version,
     description=(
         "REST API for NEXUS VELORIX. Resource endpoints require Supabase configuration "
-        "and read only data exposed by the database's row-level security policies."
+        "and respect the database's row-level security policies."
     ),
     openapi_tags=[
         {"name": "Health", "description": "Service readiness."},
@@ -29,7 +29,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 

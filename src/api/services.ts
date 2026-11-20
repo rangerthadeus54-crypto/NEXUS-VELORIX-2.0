@@ -1,9 +1,11 @@
-import { apiGet } from './client'
+import { apiGet, apiPatch, apiPost } from './client'
 import type {
+  CommunityCreateRequest,
   CommunitySummary,
   GameSummary,
   LeaderboardEntry,
   PlayerProfileRecord,
+  PlayerProfileUpdate,
   TeamSummary,
   TournamentStatus,
   TournamentSummary,
@@ -61,6 +63,19 @@ export const usersApi = {
 }
 
 export const profilesApi = {
+  getCurrent(options: Pick<ListOptions, 'signal'> = {}) {
+    return apiGet<PlayerProfileRecord>(
+      '/api/v1/profiles/me',
+      { authenticated: true, signal: options.signal },
+    )
+  },
+  updateCurrent(profile: PlayerProfileUpdate, options: Pick<ListOptions, 'signal'> = {}) {
+    return apiPatch<PlayerProfileRecord>(
+      '/api/v1/profiles/me',
+      profile,
+      { authenticated: true, signal: options.signal },
+    )
+  },
   get(userId: string, options: Pick<ListOptions, 'signal'> = {}) {
     return apiGet<PlayerProfileRecord>(
       `/api/v1/profiles/${encodeURIComponent(userId)}`,
@@ -82,6 +97,17 @@ export const gamesApi = {
 }
 
 export const communitiesApi = {
+  create(
+    community: CommunityCreateRequest,
+    idempotencyKey: string,
+    options: Pick<ListOptions, 'signal'> = {},
+  ) {
+    return apiPost<CommunitySummary>('/api/v1/communities', community, {
+      authenticated: true,
+      headers: { 'Idempotency-Key': idempotencyKey },
+      signal: options.signal,
+    })
+  },
   list(options: CommunityListOptions = {}) {
     return apiGet<CommunitySummary[]>(
       `/api/v1/communities${listQuery(options, { game_id: options.game_id })}`,
