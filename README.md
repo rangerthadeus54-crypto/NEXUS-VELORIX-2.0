@@ -7,10 +7,10 @@ A dark, responsive gaming community platform frontend. Community, tournament, le
 - **Frontend:** React, TypeScript, Vite, React Router, CSS, and Lucide React.
 - **API:** Python and FastAPI in `backend/`. The versioned REST contract and interactive OpenAPI docs are available locally.
 - **Authentication:** Supabase Auth is available when the public project URL and anon/publishable key are configured.
-- **Profile storage:** The signed-in player's editable display name, favorite games, platform, and country are stored as Supabase Auth user metadata and synchronized to PostgreSQL by a database trigger.
+- **Profile storage:** Supabase Auth provides identity; editable player profile fields are read and written through the authenticated FastAPI API and stored in PostgreSQL.
 - **Planned deployment:** GitHub and Vercel.
 
-Without Supabase environment variables, account forms are disabled and protected pages redirect to login; no fake session is created. The frontend does not yet load community, game, team, tournament, leaderboard, or news data from the API or PostgreSQL.
+Without Supabase environment variables, account forms are disabled and protected pages redirect to login; no fake session is created. The frontend uses the API for live community and game catalogs, authenticated player profiles, and community creation when configured. Other platform sections may still show clearly labeled demonstration data.
 
 ## Run locally
 
@@ -37,7 +37,7 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-The interactive API reference is at `http://127.0.0.1:8000/docs`; health is at `/health` (`data_backend` reports configuration presence, not a live connectivity check). Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `backend/.env` to enable API reads, and apply `supabase/migrations/20261119000000_initial_schema.sql` to your Supabase project first. `API_CORS_ORIGINS` is a JSON array of allowed frontend origins. The API uses only the anon key and reads public data subject to database row-level security; never place a `service_role` key in this configuration. Without Supabase configuration, resource requests return `503` rather than pretending an empty result is live data. The React frontend is not yet wired to these API endpoints.
+The interactive API reference is at `http://127.0.0.1:8000/docs`; health is at `/health` (`data_backend` reports configuration presence, not a live connectivity check). Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `backend/.env` to enable API data access, including authenticated profile updates and community creation. `API_CORS_ORIGINS` is a JSON array of allowed frontend origins. Before live use, ensure the initial schema and incremental migrations are applied in timestamp order. The API uses only the anon key and respects database row-level security; never place a `service_role` key in this configuration. Without Supabase configuration, resource requests return `503` rather than pretending an empty result is live data. The React frontend calls the API for its integrated community, game, and profile flows when `VITE_API_BASE_URL` is configured.
 
 Run API tests from `backend/`:
 
@@ -47,9 +47,14 @@ Run API tests from `backend/`:
 
 ## Deployment preparation
 
-- The repository root is ready to deploy to Vercel as a Vite SPA. `vercel.json` sets the build/output paths and history fallback for client-side routes. Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as Vercel environment variables if frontend authentication should be enabled.
-- The API is containerized independently: from `backend/`, run `docker build -t nexus-velorix-api .`. Deploy the image to a container host and configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `API_CORS_ORIGINS` there. The backend host is intentionally provider-neutral; the frontend does not yet call the API.
-- Apply the Supabase migration before deploying the API. Do not add a `service_role` key to the frontend, API, image, or repository.
+- **Frontend Vercel project:** Keep its Root Directory at the repository root. The root `vercel.json` configures the Vite build, output directory, and client-side route fallback. Set `VITE_API_BASE_URL` in this frontend project's Vercel environment variables to the backend deployment origin, for example `https://<backend-project>.vercel.app` (do not append `/api/v1`; the frontend client adds API paths). Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` here only if frontend authentication is enabled.
+- **Separate backend Vercel project:** Import the same GitHub repository as a new Vercel project and set **Root Directory** to `backend`. Let Vercel auto-detect FastAPI; leave Build Command and Output Directory unset. `backend/pyproject.toml` declares the `app.main:app` entry point and `backend/.python-version` pins Python 3.12. Vercel routes requests to the FastAPI app, including `/health` and `/api/v1/*`; no Uvicorn start command or backend `vercel.json` rewrite is needed.
+- Add these environment variables to the **backend Vercel project** (for the required deployment environments):
+  - `SUPABASE_URL`: the Supabase project URL.
+  - `SUPABASE_ANON_KEY`: the Supabase anon/publishable key only. Never use a service-role key.
+  - `API_CORS_ORIGINS`: a JSON array containing the exact frontend origins, for example `["https://<frontend-domain>"]`. Include any Vercel preview origins that need browser access; do not use a wildcard.
+- Before production use, ensure the initial Supabase schema and the three incremental migrations in `supabase/migrations/` have been applied in timestamp order. Migrations are not run by the Vercel build.
+- After configuration, verify `https://<backend-project>.vercel.app/health` and the API docs at `/docs`. The health response reports configuration presence, not live database connectivity.
 - GitHub Actions runs frontend lint/build, backend tests, and PostgreSQL migration syntax validation on pushes and pull requests. Live Supabase connectivity still requires project configuration.
 
 ## Validate
